@@ -16,9 +16,11 @@ internal static class SharePointFileTransfer
             content.ReadExactly(smallBytes, 0, smallBytes.Length);
             if (content.ReadByte() != -1) throw new IOException("Source size changed during upload: " + url);
             using var buffer = new MemoryStream(smallBytes, false);
-            var small = folder.Files.AddUsingPath(ResourcePath.FromDecodedUrl(url), parameters, buffer);
+            folder.Files.AddUsingPath(ResourcePath.FromDecodedUrl(url), parameters, buffer);
             context.ExecuteQuery();
-            return small;
+            // AddUsingPath retains the stream in its CSOM object path. A later
+            // metadata request must use a fresh lookup after this buffer is disposed.
+            return context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(url));
         }
 
         Guid uploadId = Guid.NewGuid();
@@ -31,8 +33,9 @@ internal static class SharePointFileTransfer
         else
         {
             using var empty = new MemoryStream();
-            file = folder.Files.AddUsingPath(ResourcePath.FromDecodedUrl(uploadUrl), parameters, empty);
+            folder.Files.AddUsingPath(ResourcePath.FromDecodedUrl(uploadUrl), parameters, empty);
             context.ExecuteQuery();
+            file = context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(uploadUrl));
         }
         long offset = 0;
         var bytes = new byte[ChunkSize];
@@ -52,8 +55,10 @@ internal static class SharePointFileTransfer
                 }
                 else if (offset + count == length)
                 {
-                    file = file.FinishUpload(uploadId, offset, chunk);
+                    file.FinishUpload(uploadId, offset, chunk);
                     context.ExecuteQuery();
+                    // Do not retain the stream-bearing FinishUpload result.
+                    file = context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(uploadUrl));
                     offset += count;
                 }
                 else
@@ -71,7 +76,8 @@ internal static class SharePointFileTransfer
                 context.ExecuteQuery();
                 file = context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(url));
             }
-            return file;
+            // Keep follow-up metadata requests independent of all upload streams.
+            return context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(url));
         }
         catch
         {
