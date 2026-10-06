@@ -152,7 +152,10 @@ internal sealed class SharePointSyncStore : ISyncStore
         var siteLocalTime = context.Web.RegionalSettings.TimeZone.UTCToLocalTime(expectedModified);
         context.ExecuteQuery();
         var results = item.ValidateUpdateListItem(
-            SharePointTimestamp.FormValues(siteLocalTime.Value, editor.LoginName), true, "");
+            SharePointTimestamp.FormValues(siteLocalTime.Value, editor.LoginName),
+            true, "", false, false, "");
+        // datesInUTC=false because the form date was converted to site-local time;
+        // no shared-lock validation/token is requested.
         context.ExecuteQuery();
         SharePointTimestamp.EnsureSuccess(results);
 
