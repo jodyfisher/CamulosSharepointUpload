@@ -20,6 +20,8 @@ internal sealed class SharePointSyncStore : ISyncStore
         if (library.BaseType != BaseType.DocumentLibrary) throw new ArgumentException("Select a SharePoint document library.");
         libraryRoot = library.RootFolder.ServerRelativePath.DecodedUrl.TrimEnd('/');
         if (!string.IsNullOrEmpty(folder)) SyncPaths.Validate(folder);
+        if (!string.IsNullOrEmpty(folder) && SyncPaths.IsExcluded(folder))
+            throw new ArgumentException("The selected folder is excluded from document sync: " + folder);
         if (IsForms(folder)) throw new ArgumentException("The library's system Forms folder cannot be synced.");
         root = libraryRoot + (string.IsNullOrEmpty(folder) ? "" : "/" + folder);
         Console.WriteLine("SharePoint scope: " + root);
@@ -35,10 +37,12 @@ internal sealed class SharePointSyncStore : ISyncStore
     private SPFile GetFile(string relative) => context.Web.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(Url(relative)));
     private Folder GetFolder(string relative) => context.Web.GetFolderByServerRelativePath(ResourcePath.FromDecodedUrl(Url(relative)));
 
-    public void ValidateSource(SyncSnapshot source)
+    public void ValidatePath(string path)
     {
-        if (root == libraryRoot && source.Files.Keys.Concat(source.Folders).Any(IsForms))
-            throw new IOException("A local Forms entry conflicts with the protected SharePoint system folder. Choose a different sync root.");
+        SyncPaths.ValidateSharePoint(path);
+        if (Url(path).TrimStart('/').Length > 400)
+            throw new IOException("SharePoint path exceeds 400 characters: " + path +
+                ". Shorten the path or choose a shallower sync root.");
     }
 
     public SyncSnapshot Scan()
@@ -68,6 +72,11 @@ internal sealed class SharePointSyncStore : ISyncStore
                     throw new IOException("SharePoint returned an item outside the sync scope: " + url);
                 string relative = url[(root.Length + 1)..];
                 if (root == libraryRoot && IsForms(relative)) continue;
+                if (SyncPaths.IsExcluded(relative))
+                {
+                    result.Exclude(relative);
+                    continue;
+                }
                 if (item.FileSystemObjectType == FileSystemObjectType.Folder) result.AddFolder(relative);
                 else result.AddFile(new(relative, Utc((DateTime)item["Modified"]), Convert.ToInt64(item["File_x0020_Size"])));
             }

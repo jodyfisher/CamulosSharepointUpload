@@ -6,6 +6,16 @@ internal sealed class SyncSnapshot
 {
     public Dictionary<string, SyncFile> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Folders { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> ProtectedFolders { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public int ExcludedEntries { get; private set; }
+
+    public void Exclude(string path)
+    {
+        ExcludedEntries++;
+        // Retain ancestors containing excluded content when planning --delete.
+        for (string parent = SyncPaths.Parent(path); parent != ""; parent = SyncPaths.Parent(parent))
+            ProtectedFolders.Add(parent);
+    }
 
     public void AddFolder(string path)
     {
@@ -33,6 +43,32 @@ internal static class SyncPaths
         if (string.IsNullOrWhiteSpace(path) || path.StartsWith('/') || path.Contains('\\') ||
             path.Split('/').Any(s => s is "" or "." or ".." || s.Contains('\0')))
             throw new ArgumentException("Use a relative path without empty, '.' or '..' segments: " + path);
+    }
+
+    public static bool IsExcluded(string path) => path.Split('/').Any(part =>
+        part.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+        part.EndsWith(":Zone.Identifier", StringComparison.OrdinalIgnoreCase) ||
+        part.EndsWith(":Zone.Identifier:$DATA", StringComparison.OrdinalIgnoreCase));
+
+    public static void ValidateSharePoint(string path)
+    {
+        Validate(path);
+        foreach (string part in path.Split('/'))
+        {
+            string stem = part.Split('.')[0];
+            bool reserved = part.Equals(".lock", StringComparison.OrdinalIgnoreCase) ||
+                part.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
+                part.Contains("_vti_", StringComparison.OrdinalIgnoreCase) ||
+                part.StartsWith("~$", StringComparison.OrdinalIgnoreCase) ||
+                new[] { "CON", "PRN", "AUX", "NUL" }.Contains(stem, StringComparer.OrdinalIgnoreCase) ||
+                (stem.Length == 4 && char.IsAsciiDigit(stem[3]) &&
+                    (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+                     stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)));
+            if (part.Any(c => char.IsControl(c) || "\"*:<>?|".Contains(c)) ||
+                part.StartsWith(' ') || part.EndsWith(' ') || reserved)
+                throw new IOException("Unsupported SharePoint name: " + path +
+                    ". Rename this local entry before syncing.");
+        }
     }
 
     public static int Depth(string path) => path.Count(c => c == '/');
@@ -73,49 +109,101 @@ internal static class SyncPlanner
                 .ThenBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray(),
             transfers,
             delete ? target.Files.Values.Where(f => !source.Files.ContainsKey(f.Path)).ToArray() : [],
-            delete ? target.Folders.Where(f => !source.Folders.Contains(f)).OrderByDescending(SyncPaths.Depth).ToArray() : [],
+            delete ? target.Folders.Where(f => !source.Folders.Contains(f) && !target.ProtectedFolders.Contains(f)).OrderByDescending(SyncPaths.Depth).ToArray() : [],
             source.Files.Count - transfers.Length);
     }
 }
 
 internal static class SyncRunner
 {
-    public static SyncPlan Run(ISyncStore source, ISyncStore target, bool delete, bool dryRun, TextWriter output)
+    public static SyncPlan Run(ISyncStore source, ISyncStore target, bool delete, bool dryRun, TextWriter output,
+        Action<string, Exception> onError = null)
     {
-        // Complete both scans and detect conflicts before performing any writes.
+        // Incomplete scans still stop the run before writes or deletion.
         var sourceSnapshot = source.Scan();
-        var plan = SyncPlanner.Build(sourceSnapshot, target.Scan(), delete);
+        var targetSnapshot = target.Scan();
+        var failedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int errors = 0, copied = 0, created = 0, recycledFiles = 0, recycledFolders = 0;
+        bool Blocked(string path)
+        {
+            for (string current = path; current != ""; current = SyncPaths.Parent(current))
+                if (failedPaths.Contains(current)) return true;
+            return false;
+        }
+        bool Attempt(string path, Action action)
+        {
+            if (Blocked(path))
+            {
+                output.WriteLine("SKIP " + path + " (this entry or its parent failed)");
+                return false;
+            }
+            try { action(); return true; }
+            catch (Exception error)
+            {
+                if (onError == null) throw;
+                errors++;
+                failedPaths.Add(path);
+                onError(path, error);
+                return false;
+            }
+        }
+        // Report invalid upload names before any writes, then continue with valid entries.
+        if (target is SharePointSyncStore remote)
+            foreach (string path in sourceSnapshot.Files.Keys.Concat(sourceSnapshot.Folders)
+                .OrderBy(SyncPaths.Depth).ThenBy(p => p, StringComparer.OrdinalIgnoreCase))
+                if (!Blocked(path)) Attempt(path, () => remote.ValidatePath(path));
+        var plan = SyncPlanner.Build(sourceSnapshot, targetSnapshot, delete);
         foreach (var folder in plan.CreateFolders)
         {
-            output.WriteLine("CREATE FOLDER " + folder);
-            if (!dryRun) target.CreateFolder(folder);
+            if (Attempt(folder, () =>
+            {
+                output.WriteLine("CREATE FOLDER " + folder);
+                if (!dryRun) target.CreateFolder(folder);
+            })) created++;
         }
         foreach (var transfer in plan.Transfers)
         {
-            output.WriteLine("COPY " + transfer.Source.Path);
-            if (!dryRun)
+            if (Attempt(transfer.Source.Path, () =>
             {
-                source.Verify(transfer.Source);
-                using (var stream = source.OpenRead(transfer.Source))
-                    target.Write(transfer.Source, transfer.Previous, stream);
-                source.Verify(transfer.Source);
+                output.WriteLine("COPY " + transfer.Source.Path);
+                if (!dryRun)
+                {
+                    source.Verify(transfer.Source);
+                    using (var stream = source.OpenRead(transfer.Source))
+                        target.Write(transfer.Source, transfer.Previous, stream);
+                    source.Verify(transfer.Source);
+                }
+            })) copied++;
+        }
+        // No deletion after any item failure, incomplete scan, or changed source tree.
+        if (delete && errors > 0)
+            output.WriteLine("Remote deletion cancelled because some entries failed. See Errors.txt.");
+        else
+        {
+            if (delete && !dryRun && !sourceSnapshot.SameAs(source.Scan()))
+                throw new IOException("The source changed during sync. Remote deletion was cancelled; run again.");
+            foreach (var file in plan.DeleteFiles)
+            {
+                if (Attempt(file.Path, () =>
+                {
+                    output.WriteLine("RECYCLE FILE " + file.Path);
+                    if (!dryRun) target.RecycleFile(file);
+                })) recycledFiles++;
             }
+            // A failed file recycle must never lead to recycling its containing folder.
+            if (errors == 0)
+                foreach (var folder in plan.DeleteFolders)
+                {
+                    if (Attempt(folder, () =>
+                    {
+                        output.WriteLine("RECYCLE FOLDER " + folder);
+                        if (!dryRun) target.RecycleEmptyFolder(folder);
+                    })) recycledFolders++;
+                    else break;
+                }
         }
-        // No deletion after a failed transfer, incomplete scan, or changed source tree.
-        if (delete && !dryRun && !sourceSnapshot.SameAs(source.Scan()))
-            throw new IOException("The source changed during sync. Remote deletion was cancelled; run again.");
-        foreach (var file in plan.DeleteFiles)
-        {
-            output.WriteLine("RECYCLE FILE " + file.Path);
-            if (!dryRun) target.RecycleFile(file);
-        }
-        foreach (var folder in plan.DeleteFolders)
-        {
-            output.WriteLine("RECYCLE FOLDER " + folder);
-            if (!dryRun) target.RecycleEmptyFolder(folder);
-        }
-        output.WriteLine($"{(dryRun ? "Planned" : "Completed")}: {plan.Transfers.Length} files copied, {plan.CreateFolders.Length} folders created, " +
-            $"{plan.Skipped} files skipped, {plan.DeleteFiles.Length} files/{plan.DeleteFolders.Length} folders recycled.");
+        output.WriteLine($"{(dryRun ? "Planned" : "Completed")}: {copied} files copied, {created} folders created, " +
+            $"{plan.Skipped} files skipped, {recycledFiles} files/{recycledFolders} folders recycled, {errors} errors.");
         return plan;
     }
 }

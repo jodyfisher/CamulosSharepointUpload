@@ -23,27 +23,48 @@ internal static class Program
                 Console.WriteLine($"Connected to: {context.Web.Title} ({context.Web.Url})");
                 return 0;
             }
+            bool hadErrors = false;
             foreach (var job in options.Jobs())
             {
                 Configuration.o365UserName = job.User;
                 var local = new LocalSyncStore(job.Local, !options.Download);
                 // A missing/unreadable/case-conflicting source fails before connecting or writing.
                 var localSnapshot = local.Scan();
+                if (localSnapshot.ExcludedEntries > 0)
+                    Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local entries (.git and Windows Zone.Identifier metadata).");
                 using var context = Configuration.GetUserContext(job.Site);
                 context.RequestTimeout = 180000;
                 var remote = new SharePointSyncStore(context, job.Library, job.Folder);
-                if (!options.Download) remote.ValidateSource(localSnapshot);
                 Console.WriteLine($"{(options.DryRun ? "DRY RUN " : "")}{(options.Download ? "DOWNLOAD" : "UPLOAD")}: {Path.GetFullPath(job.Local)}");
                 if (options.Delete) Console.WriteLine("Remote extras will be moved to the SharePoint recycle bin after successful uploads.");
                 SyncRunner.Run(options.Download ? remote : local, options.Download ? local : remote,
-                    options.Delete, options.DryRun, Console.Out);
+                    options.Delete, options.DryRun, Console.Out, (path, error) =>
+                    {
+                        hadErrors = true;
+                        Console.Error.WriteLine("ERROR " + path + ": " + error.Message);
+                        LogError(path, error);
+                    });
             }
-            return 0;
+            return hadErrors ? 1 : 0;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine("Sync stopped: " + ex.Message);
+            LogError("sync", ex);
             return 1;
+        }
+    }
+
+    private static void LogError(string path, Exception error)
+    {
+        try
+        {
+            System.IO.File.AppendAllText("Errors.txt",
+                $"{DateTime.UtcNow:O} {path}: {error.Message}{Environment.NewLine}");
+        }
+        catch (Exception logError)
+        {
+            Console.Error.WriteLine("Could not write Errors.txt: " + logError.Message);
         }
     }
 }

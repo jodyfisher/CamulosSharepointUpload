@@ -38,11 +38,17 @@ After upload, the tool sets SharePoint's `Modified` timestamp to the local sourc
 mtime and verifies size/time. The account must be permitted to update that
 metadata. Other metadata/permissions are not copied from the local file.
 
-A failure returns exit code 1 and stops the run. Previously completed operations
-remain; this is not a transaction. Avoid editing either tree during a sync. The
-tool checks scanned files before using them, verifies transfers, and checks the
-local source again before remote deletion, but it cannot provide an atomic
-snapshot against simultaneous edits.
+Individual file/folder errors are printed and appended to `Errors.txt` in the
+current working directory, with UTC timestamps and relative paths. The run
+continues with the remaining entries; a failed folder creation skips descendants
+of that folder. Any item error cancels the remote deletion phase and the final
+exit code is 1. Scanning, authentication and library setup failures still stop
+the run, because a complete sync plan cannot be obtained.
+
+Previously completed operations remain; this is not a transaction. Avoid editing
+either tree during a sync. The tool checks scanned files before using them,
+verifies transfers, and checks the local source again before remote deletion,
+but it cannot provide an atomic snapshot against simultaneous edits.
 
 ## Remote deletion (`--delete`)
 
@@ -77,6 +83,21 @@ the SharePoint modified timestamp is preserved locally. `--download --delete`
 is rejected: local deletion is deliberately not supported.
 
 ## Paths and large files
+
+Git metadata entries named `.git` (including their descendants) and Windows
+download metadata ending in `:Zone.Identifier` or `:Zone.Identifier:$DATA`
+are excluded automatically, in both directions. The actual document is still
+synced. These exclusions also protect existing remote entries from `--delete`;
+ancestor folders containing excluded content are retained. Existing uploaded
+`.git` content needs manual cleanup if you want to remove it from SharePoint.
+Local files are never deleted by these exclusions.
+
+Before creating folders or uploading files, the tool checks the complete source
+for unsupported SharePoint characters/reserved names and paths over 400 characters.
+Other invalid document names are logged with the path to rename and skipped,
+while valid entries continue. Spaces within names, `#` and `%` are supported, subject to your
+tenant's settings.
+
 
 Relative directory structure is preserved. Decoded SharePoint ResourcePath APIs
 support names containing spaces, `%` and `#`. Linux case-conflicting names

@@ -20,9 +20,14 @@ internal sealed class LocalSyncStore(string root, bool requireExisting) : ISyncS
         {
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
             {
+                string relative = Path.GetRelativePath(rootPath, entry.FullName).Replace(Path.DirectorySeparatorChar, '/');
+                if (SyncPaths.IsExcluded(relative))
+                {
+                    result.Exclude(relative);
+                    continue;
+                }
                 if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget != null)
                     throw new IOException("Symbolic links are not supported in the sync tree: " + entry.FullName);
-                string relative = Path.GetRelativePath(rootPath, entry.FullName).Replace(Path.DirectorySeparatorChar, '/');
                 if (!knownPaths.TryAdd(relative, entry.FullName))
                     throw new IOException("Duplicate or case-conflicting local path: " + relative);
                 if (entry is DirectoryInfo)

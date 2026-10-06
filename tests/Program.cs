@@ -74,6 +74,29 @@ Test("failed uploads prevent every remote deletion", () =>
     Throws<IOException>(() => SyncRunner.Run(new FakeStore(Snapshot(File("new"))), target, true, false, TextWriter.Null));
     Check(!target.Events.Any(e => e.StartsWith("delete")));
 });
+Test("logged file failure continues with the next file and cancels deletion", () =>
+{
+    var source = new FakeStore(Snapshot(File("a-fail"), File("b-good")));
+    var target = new FakeStore(Snapshot(File("extra"))) { FailWritePath = "a-fail" };
+    var failures = new List<string>();
+    using var output = new StringWriter();
+    SyncRunner.Run(source, target, true, false, output, (path, error) => failures.Add(path));
+    Check(failures.SequenceEqual(new[] { "a-fail" }));
+    Check(target.Events.SequenceEqual(new[] { "write:b-good" }));
+    Check(output.ToString().Contains("deletion cancelled"));
+    Check(output.ToString().Contains("1 files copied"));
+});
+Test("logged folder failure skips descendants and continues elsewhere", () =>
+{
+    var sourceSnapshot = Snapshot(File("a/file"), File("b/file"));
+    sourceSnapshot.AddFolder("a"); sourceSnapshot.AddFolder("a/child"); sourceSnapshot.AddFolder("b");
+    var target = new FakeStore(new()) { FailFolderPath = "a" };
+    var failures = new List<string>();
+    SyncRunner.Run(new FakeStore(sourceSnapshot), target, false, false, TextWriter.Null,
+        (path, error) => failures.Add(path));
+    Check(failures.SequenceEqual(new[] { "a" }));
+    Check(target.Events.SequenceEqual(new[] { "folder:b", "write:b/file" }));
+});
 Test("incomplete scan prevents writes and deletes", () =>
 {
     var target = new FakeStore(Snapshot(File("extra")));
@@ -115,10 +138,54 @@ Test("relative paths and case collisions are rejected", () =>
     var snapshot = Snapshot(File("Report.txt"));
     Throws<IOException>(() => snapshot.AddFile(File("report.txt")));
 });
+Test("excluded metadata paths do not include similarly named documents", () =>
+{
+    foreach (string path in new[] { ".git/config", "repo/.GIT/logs/HEAD", "report.pdf:Zone.Identifier", "report.pdf:Zone.Identifier:$DATA" })
+        Check(SyncPaths.IsExcluded(path));
+    foreach (string path in new[] { ".gitignore", "repo/.github/workflows/build.yml", "Zone.Identifier", "report.pdf:Zone.Identifier.txt" })
+        Check(!SyncPaths.IsExcluded(path));
+});
+Test("excluded remote content protects ancestors from delete", () =>
+{
+    var target = Snapshot(File("old/extra"));
+    target.AddFolder("old"); target.AddFolder("old/empty");
+    target.Exclude("old/.git/config");
+    var plan = SyncPlanner.Build(new(), target, true);
+    Check(plan.DeleteFiles.Single().Path == "old/extra");
+    Check(plan.DeleteFolders.SequenceEqual(new[] { "old/empty" }));
+});
+Test("SharePoint preflight rejects invalid names but accepts hash percent and spaces", () =>
+{
+    foreach (string path in new[] { "a:b.pdf", "a?b", "a*b", "a\"b", "a|b", "a<b", "a>b", " leading/file", "trailing ", "CON.txt", "LPT9", "_vti_config", "~$report.docx", "desktop.ini" })
+        Throws<IOException>(() => SyncPaths.ValidateSharePoint(path));
+    foreach (string path in new[] { "Accounts/2025 report # 100%.pdf", ".gitignore", "console.txt", "computer.txt" })
+        SyncPaths.ValidateSharePoint(path);
+});
 string temp = Path.Combine(Path.GetTempPath(), "camulos-sync-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temp);
 try
 {
+    Test("local scan prunes Git metadata while retaining documents", () =>
+    {
+        string root = Path.Combine(temp, "metadata");
+        string git = Path.Combine(root, "repo", ".git", "logs"); Directory.CreateDirectory(git);
+        System.IO.File.WriteAllText(Path.Combine(git, "HEAD"), "history");
+        System.IO.File.WriteAllText(Path.Combine(root, "repo", ".gitignore"), "*.tmp");
+        System.IO.File.WriteAllText(Path.Combine(root, "report.pdf"), "document");
+        if (OperatingSystem.IsLinux())
+        {
+            System.IO.File.WriteAllText(Path.Combine(root, "report.pdf:Zone.Identifier"), "metadata");
+            System.IO.File.WriteAllText(Path.Combine(root, "report.pdf:Zone.Identifier:$DATA"), "metadata");
+            Directory.CreateSymbolicLink(Path.Combine(git, "ignored-link"), temp);
+        }
+        var snapshot = new LocalSyncStore(root, true).Scan();
+        Check(snapshot.Files.Keys.Order().SequenceEqual(new[] { "repo/.gitignore", "report.pdf" }));
+        Check(snapshot.Folders.SetEquals(new[] { "repo" }));
+        Check(snapshot.ExcludedEntries == (OperatingSystem.IsLinux() ? 3 : 1));
+        Check(System.IO.File.Exists(Path.Combine(git, "HEAD")));
+        System.IO.File.AppendAllText(Path.Combine(git, "HEAD"), "new history");
+        Check(snapshot.SameAs(new LocalSyncStore(root, true).Scan()));
+    });
     Test("Linux scan preserves timestamps and empty directories", () =>
     {
         string root = Path.Combine(temp, "source"); Directory.CreateDirectory(Path.Combine(root, "empty"));
@@ -222,6 +289,8 @@ internal sealed class FakeStore(SyncSnapshot snapshot) : ISyncStore
 {
     public List<string> Events { get; } = [];
     public bool FailWrite { get; init; }
+    public string FailWritePath { get; init; }
+    public string FailFolderPath { get; init; }
     public bool FailScan { get; init; }
     public SyncSnapshot SecondSnapshot { get; init; }
     public int Reads { get; private set; }
@@ -231,12 +300,16 @@ internal sealed class FakeStore(SyncSnapshot snapshot) : ISyncStore
         if (FailScan) throw new IOException("scan failed");
         return scans++ > 0 && SecondSnapshot != null ? SecondSnapshot : snapshot;
     }
-    public void CreateFolder(string path) => Events.Add("folder:" + path);
+    public void CreateFolder(string path)
+    {
+        if (path == FailFolderPath) throw new IOException("folder creation failed");
+        Events.Add("folder:" + path);
+    }
     public void Verify(SyncFile file) { }
     public Stream OpenRead(SyncFile file) { Reads++; return new MemoryStream([1]); }
     public void Write(SyncFile source, SyncFile previous, Stream content)
     {
-        if (FailWrite) throw new IOException("upload failed");
+        if (FailWrite || source.Path == FailWritePath) throw new IOException("upload failed");
         Events.Add("write:" + source.Path);
     }
     public void RecycleFile(SyncFile file) => Events.Add("delete:" + file.Path);
