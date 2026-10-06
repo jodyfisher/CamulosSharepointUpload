@@ -7,11 +7,9 @@ using Microsoft.SharePoint.Client;
 using System.IO;
 using System.Text.RegularExpressions;
 using camulosTools;
-using System.Windows.Forms;
 using System.Data.OleDb;
 using System.Data;
 using System.Runtime.CompilerServices;
-using System.Runtime.Remoting.Contexts;
 using System.Runtime.InteropServices.ComTypes;
 using static System.Net.WebRequestMethods;
 using System.Security.AccessControl;
@@ -21,7 +19,7 @@ using System.Reflection;
 using System.Xml.Linq;
 using DocumentFormat.OpenXml.Packaging;
 
-// example usage /source "C:\Users\Jody\Documents\client\test" /user jody@camulos.onmicrosoft.com /password Maddybear7 /site https://camulos.sharepoint.com /list "Shared Documents" -initialdir "quack" -listguid {4131C16F-27EC-4F61-85B5-F4A45B08D2E1} -confirm "no" -overwrite "no"
+// Example usage: -source "/srv/documents" -user "user@example.com" -password "<password>" -site "https://example.sharepoint.com" -list "Shared Documents" -confirm "no" -overwrite "no"
 
 namespace CamulosSharePointUpload
 {
@@ -37,20 +35,13 @@ namespace CamulosSharePointUpload
         //private Microsoft.Office.Interop.PowerPoint.Application pptObject = null;
 
 
-        static void runforms()
-        {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MigrationsList());
-        }
-        [STAThread]
         static void Main(string[] args)
         {
             string cmd = "";
             string site = "";
             string data = "";
             string filename = "";
-            Boolean usingHelp = false;
+            Boolean usingHelp = args.Length == 0;
 
             Configuration.batchid = Guid.NewGuid().ToString("N");
 
@@ -80,17 +71,12 @@ namespace CamulosSharePointUpload
                             usingHelp = true;
                             break;
                         case "/edit":
-                            Configuration.runmode = 2;
-                            break;
                         case "-edit":
-                            Configuration.runmode = 2;
-                            break;
                         case "/editor":
-                            Configuration.runmode = 2;
-                            break;
                         case "-editor":
-                            Configuration.runmode = 2;
-                            break;
+                            Console.Error.WriteLine("The graphical editor has been removed. Use terminal arguments or -mode config -configfile <path>.");
+                            Environment.ExitCode = 1;
+                            return;
                     }
                 }
                 else
@@ -125,38 +111,21 @@ namespace CamulosSharePointUpload
                             cmd = "";
                             break;
                         case "/mode":
-                            if (data == "1" || data == "configfile" || data == "config")
-                            {
-                                ////runmode = 1 is migration using the config file.
-                                Configuration.runmode = 1;
-                            }
-                            else if(data == "2" || data == "editor" || data == "edit")
-                            {
-                                ////runmode = 2 is run the forms
-                                Configuration.runmode = 2;
-                            }
-                            else if (data == "3" || data == "metadata" || data == "meta")
-                            {
-                                ////runmode = 3 is metadata using config file. 
-                                Configuration.runmode = 2;
-                            }
-
-                            break;
                         case "-mode":
-                            if (data == "1" || data == "configfile" || data == "config")
+                            switch (data.ToLowerInvariant())
                             {
-                                ////runmode = 1 is migration using the config file.
-                                Configuration.runmode = 1;
-                            }
-                            else if (data == "2" || data == "editor" || data == "edit")
-                            {
-                                ////runmode = 2 is run the forms
-                                Configuration.runmode = 2;
-                            }
-                            else if (data == "3" || data == "metadata" || data == "meta")
-                            {
-                                ////runmode = 3 is metadata using config file. 
-                                Configuration.runmode = 2;
+                                case "0":
+                                    Configuration.runmode = 0;
+                                    break;
+                                case "1":
+                                case "configfile":
+                                case "config":
+                                    Configuration.runmode = 1;
+                                    break;
+                                default:
+                                    Console.Error.WriteLine("Unsupported mode. Use 0 for terminal arguments or 1/config/configfile for a configuration file. Graphical editor modes have been removed.");
+                                    Environment.ExitCode = 1;
+                                    return;
                             }
                             break;
                         case "-configfile":
@@ -170,26 +139,21 @@ namespace CamulosSharePointUpload
                     cmd = "";
                 }
             }
-            if (args.Count() == 1)
+            if (usingHelp)
             {
-                Configuration.runmode = 2;
+                Configuration.runmode = 0;
             }
 
             if (Configuration.runmode == 1)
             {
-                //// in this mode we are running against a configuration file.
-                
-                   runfromconfigfile(filename);
-                
-
-            }
-            else if(Configuration.runmode == 2)
-            {
-                runforms();
-            }
-            else
-            {
-
+                if (string.IsNullOrWhiteSpace(filename) || !System.IO.File.Exists(filename))
+                {
+                    Console.Error.WriteLine("Specify an existing configuration file with -mode config -configfile <path>.");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                runfromconfigfile(filename);
+                return;
             }
 
             if (Configuration.runmode == 0)
@@ -273,6 +237,7 @@ namespace CamulosSharePointUpload
                 else
                 {
                     Console.WriteLine("~~~~~Usage:~~~~~~~");
+                    Console.WriteLine("Terminal only: use upload arguments below, or -mode config -configfile <path> for an existing configuration file.");
                     Console.WriteLine("-user:       Required. Office 365/sharepoint Username for the sharepoint site.");
                     Console.WriteLine("-password:   Required. Office 365/sharepoint Password for the sharepoint site.");
                     Console.WriteLine("-site:       Required. site url eg https://yoursite.sharepoint.com");

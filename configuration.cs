@@ -8,7 +8,6 @@ using Microsoft.SharePoint.Client;
 
 using System.IO;
 using System.Xml.Serialization;
-using System.Media;
 
 namespace CamulosSharePointUpload
 {

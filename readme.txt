@@ -97,9 +97,20 @@ Options available if using other modes.
 -mode "configfile"	this is the same as running -mode "1" eg -mode "configfile" -configfile "c:\example\exampleconfig.spm"
 -mode "config"	this is the same as running -mode "1" eg -mode "config" -configfile "c:\example\exampleconfig.spm"
 
--mode "2"	this will run the forms to setup batches of migrations. if a filename is specified afterwards it will attempt to open it as a config file eg -mode "2" "c:\example\exampleconfig.xml"
--mode "edit"	this is the same as -mode "2" eg -mode "edit" -configfile "c:\example\exampleconfig.xml"
--mode "editor"	this is the same as -mode "2" eg -mode "editor" -configfile "c:\example\exampleconfig.xml"
+The Windows Forms editors and log analyser have been removed. Modes 2/edit/editor
+and 3/meta/metadata, and the -edit/-editor switches, are no longer available.
+Existing configuration files can still be supplied with mode 1/config/configfile.
+Use -help (or no arguments) to display terminal usage.
+
+.NET 10 / Linux migration status
+-------------------------------
+The project targets net10.0 and contains no Windows Forms screens or resources.
+This is the terminal-only preparation step; Linux upload support is not complete.
+Remaining work includes modern SharePoint CSOM authentication and file transfer
+APIs, replacing OLE DB CSV reading, and adapting Windows file ownership and paths.
+Once these are complete, the intended Linux command is:
+  dotnet CamulosSharePointUpload.dll -help
+
 
 
 		

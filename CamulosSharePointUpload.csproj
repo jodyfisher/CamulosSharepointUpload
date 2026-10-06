@@ -16,14 +16,5 @@
     <PackageReference Include="Microsoft.SharePointOnline.CSOM" Version="16.1.5521.1200" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="camulosencryption.cs" />
-    <Compile Include="configuration.cs" />
-    <Compile Include="licensing.cs" />
-    <Compile Include="MetadataMigrations.cs" />
-    <Compile Include="Migration.cs" />
-    <Compile Include="MigrationsDatabase.cs" />
-    <Compile Include="Program.cs" />
-  </ItemGroup>
 
 </Project>
