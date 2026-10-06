@@ -6,7 +6,7 @@ browser, enter the code, and sign in with your work account, including MFA where
 required. No browser is needed on the Linux host.
 
 This is an interactive method. Someone must complete sign-in when requested;
-`-confirm no` suppresses upload confirmations but does not suppress sign-in.
+`--dry-run` previews sync operations but still needs sign-in to read the library.
 Unattended scheduling will need a separate certificate-based application flow.
 
 ## One-time Entra setup
@@ -46,39 +46,35 @@ prints an error and returns exit code 1. This command only reads site informatio
 `-user "user@example.com"` is optional; if supplied, the signed-in account must
 match that username.
 
-## Upload / existing configuration files
+## Sync / existing configuration files
 
-Add `-tenant` and `-clientid` to the existing upload arguments, and remove password
-arguments. Alternatively, set these environment variables in your shell:
+Use `--tenant` and `--clientid` with the sync command, or set the environment
+variables below. See [README.md](README.md) for upload, download, dry-run and
+remote-delete examples.
 
 ```bash
 export CAMULOS_TENANT_ID="YOUR-TENANT-ID"
 export CAMULOS_CLIENT_ID="YOUR-CLIENT-ID"
-dotnet CamulosSharePointUpload.dll -mode config -configfile "/srv/migrations/jobs.xml"
+dotnet CamulosSharePointUpload.dll --configfile "/srv/migrations/jobs.xml"
 ```
 
 Command-line tenant/client settings override environment settings and apply to
-all entries in that configuration file. The existing XML format is preserved;
-its `Username` is an optional account selection hint and its `Password` is ignored.
+all document entries in a configuration file. The existing XML format is
+preserved; its `Username` is an optional account selection hint and `Password`
+is ignored. Unsupported metadata/resume/exclusion jobs are rejected before sync.
 Legacy password command-line options are ignored with a message. There is no
 fallback to username/password authentication.
 
 MSAL keeps tokens only in memory for this process, reuses them across contexts,
 and renews them silently where possible. It requests tokens for each SharePoint
-host separately (including source and destination sites). A new process normally
+host separately when a batch includes different sites. A new process normally
 requires a new device-code sign-in. No tokens or passwords are written to disk.
 If renewal requires user interaction, another device code is displayed.
 
-The old WebDAV/BinaryDirect calls have been replaced with CSOM stream operations
-so transfers use the same bearer-token authentication as metadata requests.
-Large-file/chunked transfer behaviour still needs live validation.
-
-## Current Linux migration limits
-
-Authentication is implemented, but the entire uploader has not been validated on
-Linux. CSV loading still uses Windows OLE DB, and legacy path/ownership handling
-needs further migration. The OLE DB package is retained only to allow those
-existing code paths to compile; it cannot read CSV files on Linux.
+Transfers use the normal CSOM request pipeline with bearer tokens. Large uploads
+use chunked CSOM operations; downloads stream to temporary local files. Windows
+OLE DB, file ownership/Office metadata extraction and legacy migration paths have
+been removed. Live SharePoint validation is still required.
 
 References:
 - https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/device-code-flow
