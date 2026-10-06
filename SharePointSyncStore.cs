@@ -147,15 +147,14 @@ internal sealed class SharePointSyncStore : ISyncStore
             ?? throw new IOException("SharePoint did not return the uploaded file's Editor: " + source.Path);
         var editor = context.Web.SiteUsers.GetById(editorValue.LookupId);
         context.Load(editor, user => user.LoginName);
-        // Form-value dates are interpreted in the site's regional time zone,
-        // not in UTC or in the Linux machine's local time zone.
-        var siteLocalTime = context.Web.RegionalSettings.TimeZone.UTCToLocalTime(expectedModified);
         context.ExecuteQuery();
+        // The installed CSOM signature supports datesInUTC explicitly; avoid
+        // any client/site local-time conversion in timestamp assignment.
         var results = item.ValidateUpdateListItem(
-            SharePointTimestamp.FormValues(siteLocalTime.Value, editor.LoginName),
-            true, "", false, false, "");
-        // datesInUTC=false because the form date was converted to site-local time;
-        // no shared-lock validation/token is requested.
+            SharePointTimestamp.FormValues(expectedModified, editor.LoginName),
+            true, "", true, true, "");
+        // Arguments: newDocumentUpdate, checkInComment, datesInUTC,
+        // numberInInvariantCulture, sharedLockId.
         context.ExecuteQuery();
         SharePointTimestamp.EnsureSuccess(results);
 
@@ -163,7 +162,10 @@ internal sealed class SharePointSyncStore : ISyncStore
         if (actual.Length != source.Length || SyncPaths.Seconds(actual.ModifiedUtc) != expectedModified)
             throw new IOException("SharePoint did not preserve the uploaded size/timestamp: " + source.Path +
                 $". Expected {source.Length} bytes / Modified {expectedModified:O}; " +
-                $"received {actual.Length} bytes / Modified {actual.ModifiedUtc:O}.");
+                $"received {actual.Length} bytes / Modified {actual.ModifiedUtc:O}. " +
+                "Submitted with datesInUTC=true. Validation response: " +
+                string.Join("; ", results.Select(value =>
+                    $"{value.FieldName}={value.FieldValue}, HasException={value.HasException}, Error={value.ErrorMessage}")));
     }
     public void RecycleFile(SyncFile file)
     {
@@ -185,13 +187,13 @@ internal sealed class SharePointSyncStore : ISyncStore
 
 internal static class SharePointTimestamp
 {
-    public static IList<ListItemFormUpdateValue> FormValues(DateTime siteLocalTime, string editorLogin) =>
+    public static IList<ListItemFormUpdateValue> FormValues(DateTime modifiedUtc, string editorLogin) =>
         new List<ListItemFormUpdateValue>
         {
             new()
             {
                 FieldName = "Modified",
-                FieldValue = siteLocalTime.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)
+                FieldValue = modifiedUtc.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)
             },
             new()
             {

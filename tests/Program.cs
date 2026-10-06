@@ -170,11 +170,11 @@ Test("SharePoint name mapping only replaces problem characters", () =>
     foreach (string path in new[] { "../outside", "/rooted", "a//b" })
         Throws<ArgumentException>(() => SyncPaths.ForSharePoint(path));
 });
-Test("post-upload timestamp form keeps site-local time and existing editor", () =>
+Test("post-upload timestamp form keeps UTC time and existing editor", () =>
 {
-    var values = SharePointTimestamp.FormValues(new DateTime(2026, 9, 28, 21, 8, 46),
+    var values = SharePointTimestamp.FormValues(new DateTime(2026, 9, 29, 4, 8, 46, DateTimeKind.Utc),
         "i:0#.f|membership|user@example.com");
-    Check(values.Single(v => v.FieldName == "Modified").FieldValue == "2026-09-28 21:08:46");
+    Check(values.Single(v => v.FieldName == "Modified").FieldValue == "2026-09-29 04:08:46");
     using var editor = System.Text.Json.JsonDocument.Parse(values.Single(v => v.FieldName == "Editor").FieldValue);
     Check(editor.RootElement[0].GetProperty("Key").GetString() == "i:0#.f|membership|user@example.com");
 });
