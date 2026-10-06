@@ -97,17 +97,35 @@ internal sealed class SharePointSyncStore : ISyncStore
         context.ExecuteQuery();
     }
 
+    private SyncFile ReadFileState(string path)
+    {
+        // Direct ListItem reads can use the site's regional time. Use the same
+        // explicit UTC CAML mode as Scan for every timestamp comparison.
+        string escapedUrl = System.Security.SecurityElement.Escape(Url(path));
+        var items = library.GetItems(new CamlQuery
+        {
+            FolderServerRelativePath = ResourcePath.FromDecodedUrl(root),
+            DatesInUtc = true,
+            ViewXml = "<View Scope='RecursiveAll'><Query><Where><Eq><FieldRef Name='FileRef'/>" +
+                "<Value Type='Text'>" + escapedUrl + "</Value></Eq></Where></Query>" +
+                "<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='FSObjType'/>" +
+                "<FieldRef Name='Modified'/><FieldRef Name='File_x0020_Size'/></ViewFields>" +
+                "<RowLimit>2</RowLimit></View>"
+        });
+        context.Load(items);
+        context.ExecuteQuery();
+        if (items.Count != 1 || items[0].FileSystemObjectType != FileSystemObjectType.File)
+            throw new IOException("SharePoint file is missing or ambiguous: " + path);
+        var item = items[0];
+        return new(path, Utc((DateTime)item["Modified"]), Convert.ToInt64(item["File_x0020_Size"]));
+    }
+
     private SPFile Inspect(SyncFile expected)
     {
-        var file = GetFile(expected.Path);
-        var item = file.ListItemAllFields;
-        context.Load(file, f => f.Length);
-        context.Load(item);
-        context.ExecuteQuery();
-        // Use the same library Modified field as Scan and timestamp planning.
-        if (file.Length != expected.Length || Utc((DateTime)item["Modified"]) != expected.ModifiedUtc)
+        var actual = ReadFileState(expected.Path);
+        if (actual.Length != expected.Length || actual.ModifiedUtc != expected.ModifiedUtc)
             throw new IOException("SharePoint file changed during sync: " + expected.Path);
-        return file;
+        return GetFile(expected.Path);
     }
     public void Verify(SyncFile file) => Inspect(file);
     public Stream OpenRead(SyncFile file)
@@ -126,21 +144,17 @@ internal sealed class SharePointSyncStore : ISyncStore
         context.ExecuteQuery();
         DateTime expectedModified = SyncPaths.Seconds(source.ModifiedUtc);
         item["Modified"] = expectedModified;
-        item.UpdateOverwriteVersion();
+        // Restore the original setEditDate sequence: update both the library
+        // item and the file after assigning Modified.
+        item.Update();
+        file.Update();
         context.ExecuteQuery();
 
-        // Read back in a separate request after updating. File.TimeLastModified is
-        // not the field used by Scan; verify the library item's Modified instead.
-        var verifiedFile = GetFile(source.Path);
-        var verifiedItem = verifiedFile.ListItemAllFields;
-        context.Load(verifiedFile, f => f.Length);
-        context.Load(verifiedItem);
-        context.ExecuteQuery();
-        DateTime actualModified = Utc((DateTime)verifiedItem["Modified"]);
-        if (verifiedFile.Length != source.Length || SyncPaths.Seconds(actualModified) != expectedModified)
+        var actual = ReadFileState(source.Path);
+        if (actual.Length != source.Length || SyncPaths.Seconds(actual.ModifiedUtc) != expectedModified)
             throw new IOException("SharePoint did not preserve the uploaded size/timestamp: " + source.Path +
                 $". Expected {source.Length} bytes / Modified {expectedModified:O}; " +
-                $"received {verifiedFile.Length} bytes / Modified {actualModified:O}.");
+                $"received {actual.Length} bytes / Modified {actual.ModifiedUtc:O}.");
     }
     public void RecycleFile(SyncFile file)
     {

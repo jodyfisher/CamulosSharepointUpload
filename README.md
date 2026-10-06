@@ -36,9 +36,12 @@ or sizes are still skipped; this is a timestamp sync, not a checksum comparison.
 
 After upload, the tool sets SharePoint's `Modified` timestamp to the local source
 mtime (at whole-second resolution) and verifies size plus the library item's
-`Modified` field in a separate read after updating it. Scan, overwrite protection
-and verification all use that same field. A verification error reports expected
-and actual values. The account must be permitted to update that metadata. Other metadata/permissions are not copied from the local file.
+`Modified` field in a separate read after updating it. Timestamp assignment
+uses the original item-update then file-update sequence; this may create an
+additional metadata version in a versioned library. Scan, overwrite protection
+and verification all read that same field using explicit UTC CAML queries,
+independent of the site's regional time zone. A verification error reports
+expected and actual values. The account must be permitted to update that metadata. Other metadata/permissions are not copied from the local file.
 
 Individual file/folder errors are printed and appended to `Errors.txt` in the
 current working directory, with UTC timestamps and relative paths. The run
