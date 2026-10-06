@@ -26,6 +26,51 @@ restricts the sync to an existing subfolder inside that library. The library and
 selected root folder must exist; children are created as needed, including empty
 folders. A library URL is not the same as its display title.
 
+## Upload files changed since the previous run
+
+Add `--since-last-run` to use local-date uploads without relying on SharePoint
+preserving the source date:
+
+```bash
+dotnet bin/Release/net10.0/CamulosSharePointUpload.dll \
+  --site "https://example.sharepoint.com/sites/team" \
+  --library "Documents" --local "/srv/documents" \
+  --since-last-run --dry-run
+```
+
+Remove `--dry-run` to upload. A separate checkpoint is saved for each tenant,
+SharePoint scope and absolute local directory, under the running user's local
+application-data directory (`CamulosSharePointUpload/checkpoints`). On Linux this
+normally sits under `~/.local/share` or `XDG_DATA_HOME`. The command prints its path.
+Changing the current working directory does not reset the checkpoint.
+
+- Files are selected when their local UTC modified time is **at or after** the
+  checkpoint, including missing files only if their timestamps meet that cutoff.
+- With no checkpoint, the first run selects all local files. Use
+  `--since-last-run --since "2026-10-06T06:00:00Z"` to choose an initial cutoff
+  or override a previous checkpoint for that run.
+- Selected files overwrite matching remote content **even when SharePoint's
+  timestamp is newer**. Use this mode when the local directory is authoritative.
+- SharePoint keeps its upload timestamp; this mode does not attempt to preserve
+  source dates. The uploaded size is verified. The default timestamp mode remains
+  available by omitting `--since-last-run` and `--since`.
+- Only a successful run advances the checkpoint, to that run's **start** time.
+  Changes made during a run remain eligible next time. Failed runs retain the
+  previous cutoff and retry eligible files. The saved start time is rounded down
+  to whole seconds to accommodate filesystem timestamp precision. Dry runs never
+  write checkpoint state.
+- Files restored or newly added with old modified dates are outside the cutoff.
+  An explicit earlier `--since` date can select them again.
+- Existing folders are retained and missing folders are created, including empty
+  ones. If `--delete` is used, it still compares the **complete** local tree, so
+  unchanged older local files are not mistaken for remote extras.
+- This mode is upload-only. `--download` retains the existing timestamp rules.
+
+To run once against a chosen date without saving a checkpoint, use
+`--since "2026-10-06T06:00:00Z"` alone. Dates without an explicit offset are
+interpreted as UTC. A second simultaneous run for the same checkpoint is rejected
+before writes. Keep the checkpoint files if you move or redeploy the executable.
+
 ## Timestamp behaviour
 
 Upload is the default. A file is copied when it is missing remotely or its local
@@ -34,7 +79,7 @@ or newer destination timestamps are left alone. Comparison uses whole seconds
 because SharePoint can round timestamps. Equal timestamps with differing content
 or sizes are still skipped; this is a timestamp sync, not a checksum comparison.
 
-After upload, the tool sets SharePoint's `Modified` timestamp to the local source
+In default timestamp mode, the tool attempts to set SharePoint's `Modified` timestamp to the local source
 mtime (at whole-second resolution) and verifies size plus the library item's
 `Modified` field in a separate read after updating it. Timestamp assignment
 uses SharePoint's post-upload `ValidateUpdateListItem` API with
@@ -63,7 +108,7 @@ but it cannot provide an atomic snapshot against simultaneous edits.
 
 Add `--delete` to an upload command to recycle remote files/folders that have no
 matching relative path in the local tree. Preview first with `--delete --dry-run`.
-The flag is a one-way mirror of names, not a way to overwrite remote-newer files.
+The flag controls a one-way mirror of names. Transfer/overwrite decisions follow the selected upload mode.
 
 - Deletion is limited to the selected library/subfolder; its root is retained.
 - SharePoint's system `Forms` folder is protected.

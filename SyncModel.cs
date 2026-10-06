@@ -113,15 +113,17 @@ internal sealed record SyncPlan(string[] CreateFolders, SyncTransfer[] Transfers
 
 internal static class SyncPlanner
 {
-    public static SyncPlan Build(SyncSnapshot source, SyncSnapshot target, bool delete)
+    public static SyncPlan Build(SyncSnapshot source, SyncSnapshot target, bool delete,
+        bool localDateMode = false, DateTime? sinceUtc = null)
     {
         foreach (string path in source.Files.Keys)
             if (target.Folders.Contains(path)) throw new IOException("File/folder conflict: " + path);
         foreach (string path in source.Folders)
             if (target.Files.ContainsKey(path)) throw new IOException("Folder/file conflict: " + path);
-        var transfers = source.Files.Values.Where(f =>
-            !target.Files.TryGetValue(f.Path, out var existing) ||
-            SyncPaths.Seconds(f.ModifiedUtc) > SyncPaths.Seconds(existing.ModifiedUtc))
+        var transfers = source.Files.Values.Where(f => localDateMode
+            ? !sinceUtc.HasValue || f.ModifiedUtc >= sinceUtc.Value
+            : !target.Files.TryGetValue(f.Path, out var existing) ||
+                SyncPaths.Seconds(f.ModifiedUtc) > SyncPaths.Seconds(existing.ModifiedUtc))
             .OrderBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
             .Select(f => new SyncTransfer(f, target.Files.GetValueOrDefault(f.Path))).ToArray();
         return new SyncPlan(
@@ -137,7 +139,7 @@ internal static class SyncPlanner
 internal static class SyncRunner
 {
     public static SyncPlan Run(ISyncStore source, ISyncStore target, bool delete, bool dryRun, TextWriter output,
-        Action<string, Exception> onError = null)
+        Action<string, Exception> onError = null, bool localDateMode = false, DateTime? sinceUtc = null)
     {
         // Incomplete scans still stop the run before writes or deletion.
         var sourceSnapshot = source.Scan();
@@ -167,12 +169,13 @@ internal static class SyncRunner
                 return false;
             }
         }
-        // Report invalid upload names before any writes, then continue with valid entries.
+        var plan = SyncPlanner.Build(sourceSnapshot, targetSnapshot, delete, localDateMode, sinceUtc);
+        // Validate planned uploads before writes; older files outside a local
+        // cutoff do not need to be uploaded or stamped.
         if (target is SharePointSyncStore remote)
-            foreach (string path in sourceSnapshot.Files.Keys.Concat(sourceSnapshot.Folders)
+            foreach (string path in plan.Transfers.Select(t => t.Source.Path).Concat(plan.CreateFolders)
                 .OrderBy(SyncPaths.Depth).ThenBy(p => p, StringComparer.OrdinalIgnoreCase))
                 if (!Blocked(path)) Attempt(path, () => remote.ValidatePath(path));
-        var plan = SyncPlanner.Build(sourceSnapshot, targetSnapshot, delete);
         foreach (var folder in plan.CreateFolders)
         {
             if (Attempt(folder, () =>

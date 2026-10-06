@@ -188,6 +188,48 @@ Test("metadata validation failures are reported instead of accepting an upload t
     Throws<IOException>(() => SharePointTimestamp.EnsureSuccess(
         Array.Empty<Microsoft.SharePoint.Client.ListItemFormUpdateValue>()));
 });
+Test("local cutoff selects by source date regardless of SharePoint date", () =>
+{
+    var source = Snapshot(File("old", -1), File("boundary"), File("changed", 1));
+    var target = Snapshot(File("boundary", 100), File("changed", 100));
+    var plan = SyncPlanner.Build(source, target, false, true, utc);
+    Check(plan.Transfers.Select(v => v.Source.Path).SequenceEqual(new[] { "boundary", "changed" }));
+    Check(plan.Skipped == 1);
+    Check(plan.Transfers.All(v => v.Previous != null));
+});
+Test("first checkpoint run selects all files including existing remote-newer files", () =>
+{
+    var plan = SyncPlanner.Build(Snapshot(File("file", -10)), Snapshot(File("file", 100)),
+        false, true, null);
+    Check(plan.Transfers.Single().Source.Path == "file");
+});
+Test("cutoff delete retains older local names in the complete mirror", () =>
+{
+    var source = Snapshot(File("old", -10), File("changed", 1));
+    var target = Snapshot(File("old", 100), File("changed", 100), File("extra"));
+    var plan = SyncPlanner.Build(source, target, true, true, utc);
+    Check(plan.DeleteFiles.Single().Path == "extra");
+    Check(plan.Transfers.Single().Source.Path == "changed");
+});
+Test("cutoff runner retries remote-newer files and still cancels deletion on failure", () =>
+{
+    var target = new FakeStore(Snapshot(File("a-fail", 100), File("b-good", 100), File("extra")))
+        { FailWritePath = "a-fail" };
+    var failures = new List<string>();
+    SyncRunner.Run(new FakeStore(Snapshot(File("a-fail", 1), File("b-good", 1))),
+        target, true, false, TextWriter.Null, (path, error) => failures.Add(path), true, utc);
+    Check(failures.SequenceEqual(new[] { "a-fail" }));
+    Check(target.Events.SequenceEqual(new[] { "write:b-good" }));
+});
+Test("cutoff CLI supports explicit offsets and rejects download/authcheck combinations", () =>
+{
+    var options = SyncOptions.Parse(Args("--since-last-run --since 2026-10-06T10:00:00+10:00"));
+    Check(options.LocalDateMode && options.SinceLastRun && options.SinceUtc == utc);
+    Check(SyncOptions.Parse(Args("--since 2026-10-06")).SinceUtc == utc);
+    Throws<ArgumentException>(() => SyncOptions.Parse(Args("--since invalid")));
+    Throws<ArgumentException>(() => SyncOptions.Parse(Args("--since-last-run --download")));
+    Throws<ArgumentException>(() => SyncOptions.Parse(Args("--since 2026-10-06 --authcheck")));
+});
 string temp = Path.Combine(Path.GetTempPath(), "camulos-sync-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temp);
 try
@@ -256,6 +298,59 @@ try
             Check(target.Events.Count == 0);
         });
     }
+    Test("checkpoint advances only after success and dry runs preserve it", () =>
+    {
+        string path = Path.Combine(temp, "checkpoints", "state.json");
+        using (var state = new SyncCheckpoint(path))
+        {
+            Check(state.Load() == null);
+            state.Complete(utc, false);
+            Check(!System.IO.File.Exists(path));
+            state.Complete(utc.AddMilliseconds(900), true);
+            Check(state.Load() == utc);
+            state.Complete(utc.AddHours(1), false);
+            Check(state.Load() == utc);
+            Throws<IOException>(() => { using var second = new SyncCheckpoint(path); });
+        }
+        using (var preview = new SyncCheckpoint(path, true))
+        {
+            Check(preview.Load() == utc);
+            preview.Complete(utc.AddHours(1), true);
+            Check(preview.Load() == utc);
+        }
+        using (var next = new SyncCheckpoint(path))
+        {
+            next.Complete(utc.AddHours(1), true);
+            Check(next.Load() == utc.AddHours(1));
+        }
+        Check(!Directory.GetFiles(Path.GetDirectoryName(path)).Any(p => p.EndsWith(".tmp")));
+    });
+    Test("first dry-run checkpoint creates no files or directories", () =>
+    {
+        string path = Path.Combine(temp, "preview-checkpoint", "state.json");
+        using var state = new SyncCheckpoint(path, true);
+        Check(state.Load() == null);
+        state.Complete(utc, true);
+        Check(!Directory.Exists(Path.GetDirectoryName(path)));
+    });
+    Test("checkpoint scopes separate sources and targets", () =>
+    {
+        var first = new SyncJob("https://example.sharepoint.com", "Docs", Path.Combine(temp, "one"), "", "");
+        var second = first with { Local = Path.Combine(temp, "two") };
+        Check(SyncCheckpoint.PathFor("tenant", first, "/Docs") != SyncCheckpoint.PathFor("tenant", second, "/Docs"));
+        Check(SyncCheckpoint.PathFor("tenant", first, "/Docs") != SyncCheckpoint.PathFor("tenant", first, "/Other"));
+        Check(SyncCheckpoint.PathFor("TENANT", first with { Library = "different-title" }, "/DOCS") ==
+            SyncCheckpoint.PathFor("tenant", first, "/Docs"));
+    });
+    Test("corrupt checkpoint fails instead of starting an unintended full overwrite", () =>
+    {
+        string path = Path.Combine(temp, "bad-state.json");
+        System.IO.File.WriteAllText(path, "not json");
+        using var state = new SyncCheckpoint(path, true);
+        Throws<System.Text.Json.JsonException>(() => state.Load());
+        System.IO.File.WriteAllText(path, "null");
+        Throws<IOException>(() => state.Load());
+    });
     Test("Linux scan preserves timestamps and empty directories", () =>
     {
         string root = Path.Combine(temp, "source"); Directory.CreateDirectory(Path.Combine(root, "empty"));

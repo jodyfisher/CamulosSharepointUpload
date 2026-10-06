@@ -10,10 +10,13 @@ internal sealed class SharePointSyncStore : ISyncStore
     private readonly SPList library;
     private readonly string libraryRoot;
     private readonly string root;
+    private readonly bool preserveModified;
+    public string ScopePath => root;
 
-    public SharePointSyncStore(ClientContext context, string libraryName, string folder)
+    public SharePointSyncStore(ClientContext context, string libraryName, string folder, bool preserveModified = true)
     {
         this.context = context;
+        this.preserveModified = preserveModified;
         library = Guid.TryParse(libraryName, out var id) ? context.Web.Lists.GetById(id) : context.Web.Lists.GetByTitle(libraryName);
         context.Load(library, l => l.BaseType, l => l.RootFolder.ServerRelativePath);
         context.ExecuteQuery();
@@ -139,6 +142,14 @@ internal sealed class SharePointSyncStore : ISyncStore
         if (previous != null) Verify(previous);
         var folder = context.Web.GetFolderByServerRelativePath(ResourcePath.FromDecodedUrl(SyncPaths.Parent(source.Path) == "" ? root : Url(SyncPaths.Parent(source.Path))));
         var file = SharePointFileTransfer.Upload(context, folder, Url(source.Path), content, source.Length, previous != null);
+        if (!preserveModified)
+        {
+            var uploaded = ReadFileState(source.Path);
+            if (uploaded.Length != source.Length)
+                throw new IOException("SharePoint uploaded size mismatch: " + source.Path +
+                    $". Expected {source.Length} bytes; received {uploaded.Length} bytes.");
+            return;
+        }
         var item = file.ListItemAllFields;
         context.Load(item);
         context.ExecuteQuery();

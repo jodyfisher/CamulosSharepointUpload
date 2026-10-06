@@ -26,6 +26,8 @@ internal static class Program
             bool hadErrors = false;
             foreach (var job in options.Jobs())
             {
+                DateTime runStartedUtc = DateTime.UtcNow;
+                bool jobErrors = false;
                 Configuration.o365UserName = job.User;
                 var local = new LocalSyncStore(job.Local, !options.Download);
                 // A missing/unreadable/case-conflicting source fails before connecting or writing.
@@ -34,16 +36,34 @@ internal static class Program
                     Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local metadata entries (.git, Zone.Identifier, .DS_Store, AppleDouble, Thumbs.db and desktop.ini).");
                 using var context = Configuration.GetUserContext(job.Site);
                 context.RequestTimeout = 180000;
-                var remote = new SharePointSyncStore(context, job.Library, job.Folder);
+                var remote = new SharePointSyncStore(context, job.Library, job.Folder, !options.LocalDateMode);
+                using var checkpoint = options.SinceLastRun
+                    ? new SyncCheckpoint(SyncCheckpoint.PathFor(options.Tenant, job, remote.ScopePath), options.DryRun)
+                    : null;
+                DateTime? sinceUtc = options.SinceUtc ?? checkpoint?.Load();
+                if (checkpoint != null && sinceUtc.HasValue && sinceUtc.Value > runStartedUtc)
+                    throw new IOException("The upload checkpoint/cutoff is later than this run's start. Check the system clock and --since date.");
+                if (options.LocalDateMode)
+                {
+                    Console.WriteLine(sinceUtc.HasValue
+                        ? $"Local cutoff: {sinceUtc.Value:O} (inclusive)."
+                        : "No checkpoint: initial upload selects all local files.");
+                    Console.WriteLine("Selected local files overwrite matching SharePoint content; SharePoint Modified dates are not preserved.");
+                    if (checkpoint != null) Console.WriteLine("Checkpoint: " + checkpoint.FilePath);
+                }
                 Console.WriteLine($"{(options.DryRun ? "DRY RUN " : "")}{(options.Download ? "DOWNLOAD" : "UPLOAD")}: {Path.GetFullPath(job.Local)}");
                 if (options.Delete) Console.WriteLine("Remote extras will be moved to the SharePoint recycle bin after successful uploads.");
                 SyncRunner.Run(options.Download ? remote : local, options.Download ? local : remote,
                     options.Delete, options.DryRun, Console.Out, (path, error) =>
                     {
                         hadErrors = true;
+                        jobErrors = true;
                         Console.Error.WriteLine("ERROR " + path + ": " + error.Message);
                         LogError(path, error);
-                    });
+                    }, options.LocalDateMode, sinceUtc);
+                checkpoint?.Complete(runStartedUtc, !jobErrors);
+                if (checkpoint != null && !options.DryRun)
+                    Console.WriteLine(jobErrors ? "Checkpoint retained because some entries failed." : "Upload checkpoint saved.");
             }
             return hadErrors ? 1 : 0;
         }
@@ -81,6 +101,9 @@ internal sealed class SyncOptions
     public string Local { get; private set; } = "";
     public string Folder { get; private set; } = "";
     public string ConfigFile { get; private set; } = "";
+    public bool SinceLastRun { get; private set; }
+    public DateTime? SinceUtc { get; private set; }
+    public bool LocalDateMode => SinceLastRun || SinceUtc.HasValue;
     public bool Download { get; private set; }
     public bool Delete { get; private set; }
     public bool DryRun { get; private set; }
@@ -117,6 +140,14 @@ internal sealed class SyncOptions
                     if (direction is not ("upload" or "download")) throw new ArgumentException("--direction must be upload or download.");
                     options.Download = direction == "download";
                     break;
+                case "since-last-run": options.SinceLastRun = true; break;
+                case "since":
+                    if (!DateTimeOffset.TryParse(Value(), System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeUniversal |
+                        System.Globalization.DateTimeStyles.AdjustToUniversal, out var cutoff))
+                        throw new ArgumentException("--since requires a date, such as 2026-10-06T06:00:00Z. Dates without an offset use UTC.");
+                    options.SinceUtc = cutoff.UtcDateTime;
+                    break;
                 case "delete": options.Delete = true; break;
                 case "dry-run": options.DryRun = true; break;
                 case "authcheck": options.AuthCheck = true; break;
@@ -136,6 +167,8 @@ internal sealed class SyncOptions
                 default: throw new ArgumentException("Unknown/retired option: " + args[i] + ". Use --help for the sync options.");
             }
         }
+        if (options.LocalDateMode && (options.Download || options.AuthCheck))
+            throw new ArgumentException("--since-last-run and --since apply to uploads only.");
         if (options.Delete && options.Download)
             throw new ArgumentException("--delete applies to SharePoint in upload mode only. Downloads never delete local files.");
         if (options.AuthCheck)
@@ -179,6 +212,10 @@ internal sealed class SyncOptions
         Camulos SharePoint Sync (.NET 10)
         Upload local files/folders that are missing or newer in SharePoint:
           dotnet CamulosSharePointUpload.dll --site URL --library "Documents" --local /srv/docs --tenant TENANT --clientid APP
+        Upload by local date without comparing/preserving SharePoint dates:
+          add --since-last-run (checkpoint after successful runs; first run selects all)
+          optional --since 2026-10-06T06:00:00Z to set/override the cutoff
+          selected local files overwrite matching SharePoint content, even if newer remotely
         Download files/folders that are missing or newer locally:
           add --download (or --direction download)
         Preview without writing files, folders or metadata:
@@ -189,7 +226,8 @@ internal sealed class SyncOptions
         Credentials: --tenant / --clientid or CAMULOS_TENANT_ID / CAMULOS_CLIENT_ID
         Connection check: --site URL --tenant TENANT --clientid APP --authcheck
         Existing XML jobs: --configfile /srv/jobs.xml (same direction/dry-run/delete options)
-        Compares UTC modified timestamps at one-second resolution; destination-newer files are skipped.
+        Default mode compares UTC timestamps at one-second resolution and skips destination-newer files.
+        Local-date uploads use an inclusive UTC cutoff; dry runs/failures never advance the checkpoint.
         Downloading does not remove local extras. Symlinks and case-conflicting names are rejected.
         Cordner/CSV/custom/metadata modes have been removed. See README.md and AUTHENTICATION.md.
         """;
