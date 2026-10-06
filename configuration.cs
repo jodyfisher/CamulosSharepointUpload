@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using System.Security;
 using Microsoft.SharePoint.Client;
 
 using System.IO;
@@ -16,7 +15,10 @@ namespace CamulosSharePointUpload
         public static string o365SiteURL = "";
         public static string coreSiteURL = "";
         public static string o365UserName = "";
+        // Retained for old XML/configuration compatibility; modern authentication never uses passwords.
         public static string o365Password = "";
+        public static string tenantId = Environment.GetEnvironmentVariable("CAMULOS_TENANT_ID") ?? "";
+        public static string clientId = Environment.GetEnvironmentVariable("CAMULOS_CLIENT_ID") ?? "";
         public static DateTime dt = new DateTime(1900, 1, 1);
         public static string o365List = "";
         public static string localSource = "";
@@ -89,39 +91,12 @@ namespace CamulosSharePointUpload
 
         public static ClientContext GetUserContext()
         {
-            var o365Password = new SecureString();
-                foreach(char c in Configuration.o365Password)
-            {
-                o365Password.AppendChar(c);
-            }
-            var o365Credentials = new SharePointOnlineCredentials(Configuration.o365UserName, o365Password);
-            string url = "";
-            if (Configuration.o365subsite.Length > 0)
-            {
-                url = Configuration.o365SiteURL.Substring(0, (Configuration.o365SiteURL.Length - Configuration.o365subsite.Length));
-
-            }else
-            {
-                url = Configuration.o365SiteURL;
-            }
-            var o365Context = new ClientContext(Configuration.o365SiteURL);
-            //var o365Context = new ClientContext(url);
-            o365Context.Credentials = o365Credentials;
-            return o365Context;
+            return GetUserContext(o365SiteURL);
         }
 
         public static ClientContext GetUserContext(string siteURL)
         {
-            var o365Password = new SecureString();
-            foreach (char c in Configuration.o365Password)
-            {
-                o365Password.AppendChar(c);
-            }
-            var o365Credentials = new SharePointOnlineCredentials(Configuration.o365UserName, o365Password);
-            var o365Context = new ClientContext(siteURL);
-            o365Context.Credentials = o365Credentials;
-            return o365Context;
+            return SharePointAuthentication.CreateContext(siteURL);
         }
-       
     }
 }

@@ -6,6 +6,9 @@ Software by Camulos Consulting
 Copywrite Camulos Consulting.
 Please note the License Agreement is at the bottom of this file.
 
+Modern authentication: see AUTHENTICATION.md for Entra app setup, tenant/client
+options and a read-only connection check. Password login is no longer used.
+
 How to use FiToS.
 ------------------------
 
@@ -19,13 +22,13 @@ did you then unzip it to).
 An example batch file will have the following content:
 
 CamulosSharePointUpload.exe /source "C:\ImportantDocs\Client Documents" /user yourusername@youremail.com 
-/password yourpassword /site https://yoursite.sharepoint.com /list "Shared Documents" 
+-tenant "your-tenant-id" -clientid "your-client-id" /site https://yoursite.sharepoint.com /list "Shared Documents"
 -initialdir "" -listguid {averylongnumber-see help below on how to get this} -confirm "yes" -overwrite "no"
 
 Here are the options available to you for cli and single run mode:
 
--user:       Required. Office 365/sharepoint Username for the sharepoint site.
--password:   Required. Office 365/sharepoint Password for the sharepoint site.
+-user:       Optional. Username of the account to use for browser/device-code sign-in.
+-password:   Removed. Password arguments and old XML Password values are ignored.
 -site:       Required. site url eg https://yoursite.sharepoint.com
 -list:       Required. Name of the target List in sharepoint - should be the root of the folder structure - eg Shared Documents, using
 					list name sometimes doesn't work if using older Shared Document or Documents libraries, in this case using the -listguid option.
@@ -106,8 +109,9 @@ Use -help (or no arguments) to display terminal usage.
 -------------------------------
 The project targets net10.0 and contains no Windows Forms screens or resources.
 This is the terminal-only preparation step; Linux upload support is not complete.
-Remaining work includes modern SharePoint CSOM authentication and file transfer
-APIs, replacing OLE DB CSV reading, and adapting Windows file ownership and paths.
+Modern SharePoint authentication and CSOM file transfer are implemented.
+Remaining work includes replacing OLE DB CSV reading and adapting Windows file
+ownership and paths. Live SharePoint validation is still required.
 Once these are complete, the intended Linux command is:
   dotnet CamulosSharePointUpload.dll -help
 

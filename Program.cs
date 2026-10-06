@@ -37,11 +37,35 @@ namespace CamulosSharePointUpload
 
         static void Main(string[] args)
         {
+            try
+            {
+                Run(args);
+            }
+            catch (Microsoft.Identity.Client.MsalException ex)
+            {
+                Console.Error.WriteLine("SharePoint sign-in failed (" + ex.ErrorCode + "): " + ex.Message);
+                Environment.ExitCode = 1;
+            }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                Environment.ExitCode = 1;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                Environment.ExitCode = 1;
+            }
+        }
+
+        static void Run(string[] args)
+        {
             string cmd = "";
             string site = "";
             string data = "";
             string filename = "";
             Boolean usingHelp = args.Length == 0;
+            bool authCheck = false;
 
             Configuration.batchid = Guid.NewGuid().ToString("N");
 
@@ -70,6 +94,11 @@ namespace CamulosSharePointUpload
                         case "?":
                             usingHelp = true;
                             break;
+                        case "-authcheck":
+                        case "/authcheck":
+                            authCheck = true;
+                            cmd = "";
+                            break;
                         case "/edit":
                         case "-edit":
                         case "/editor":
@@ -84,6 +113,24 @@ namespace CamulosSharePointUpload
                     data = x;
                     switch (cmd.ToLower())
                     {
+                        case "-tenant":
+                        case "/tenant":
+                            Configuration.tenantId = data.Trim();
+                            break;
+                        case "-clientid":
+                        case "/clientid":
+                            Configuration.clientId = data.Trim();
+                            break;
+                        case "-user":
+                        case "/user":
+                        case "-username":
+                        case "/username":
+                            Configuration.o365UserName = data;
+                            break;
+                        case "-s":
+                        case "/s":
+                        case "-url":
+                        case "/url":
                         case "-site":
                             site = data;
                             cmd = "";
@@ -142,6 +189,29 @@ namespace CamulosSharePointUpload
             if (usingHelp)
             {
                 Configuration.runmode = 0;
+            }
+
+            if (!usingHelp)
+            {
+                SharePointAuthentication.ValidateSettings();
+                if (authCheck)
+                {
+                    try
+                    {
+                        using (var context = Configuration.GetUserContext(site))
+                        {
+                            context.Load(context.Web, web => web.Title, web => web.Url);
+                            context.ExecuteQuery();
+                            Console.WriteLine("Connected to: " + context.Web.Title + " (" + context.Web.Url + ")");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Connection check failed: " + ex.Message);
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
             }
 
             if (Configuration.runmode == 1)
@@ -237,9 +307,12 @@ namespace CamulosSharePointUpload
                 else
                 {
                     Console.WriteLine("~~~~~Usage:~~~~~~~");
+                    Console.WriteLine("-tenant:     Required. Entra tenant ID/domain (or CAMULOS_TENANT_ID).");
+                    Console.WriteLine("-clientid:   Required. Entra app client ID (or CAMULOS_CLIENT_ID).");
+                    Console.WriteLine("-authcheck:  Optional. Sign in and read the site title; no uploads.");
                     Console.WriteLine("Terminal only: use upload arguments below, or -mode config -configfile <path> for an existing configuration file.");
-                    Console.WriteLine("-user:       Required. Office 365/sharepoint Username for the sharepoint site.");
-                    Console.WriteLine("-password:   Required. Office 365/sharepoint Password for the sharepoint site.");
+                    Console.WriteLine("-user:       Optional. Account to use when signing in through the browser.");
+                    Console.WriteLine("-password:   Removed. Passwords are not used; sign in through the browser/device code.");
                     Console.WriteLine("-site:       Required. site url eg https://yoursite.sharepoint.com");
                     Console.WriteLine("-list:       Required. Name of the target List in sharepoint - should be the root of the folder structure - eg Shared Documents");
                     Console.WriteLine("-source:     Required. location of documents on your local computer/network to be copied - ie c:\\documentsforupload");
@@ -491,27 +564,27 @@ namespace CamulosSharePointUpload
                             cmd = "";
                             break;
                         case "-p":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "/p":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "-pass":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "/pass":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "-password":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "/password":
-                            Configuration.o365Password = data;
+                            Console.Error.WriteLine("Password arguments are ignored. Sign in using the browser/device code instead.");
                             cmd = "";
                             break;
                         case "-s":
@@ -759,7 +832,7 @@ namespace CamulosSharePointUpload
             Console.WriteLine("Copying to sharepoint");
             Console.WriteLine("created by Camulos Consulting, Copywrite Camulos Consulting");
             Console.WriteLine("By using this software application you are agreeing to the License agreement.  License Agreement can be accessed here: " + licAgreement);
-            Console.WriteLine("login credentials = user: {0}, password length: {1}", Configuration.o365UserName, Configuration.o365Password.Length);
+            Console.WriteLine("Authentication: Microsoft Entra device code (MFA supported).");
 
 
 
@@ -1251,7 +1324,7 @@ namespace CamulosSharePointUpload
             foreach (Migration m in Configuration.Migrationdb.Migrations)
             {
                 Configuration.o365List = m.DocLibraryName;
-                Configuration.o365Password = m.Password;
+                // Legacy XML Password is deliberately ignored.
                 Configuration.o365UserName = m.Username;
                 Configuration.o365SiteURL = m.SharepointSite;
                 Configuration.listGUID = m.DocLibraryGUiD;
@@ -1304,7 +1377,7 @@ namespace CamulosSharePointUpload
             Console.WriteLine("Copying to sharepoint");
             Console.WriteLine("created by Camulos Consulting, Copywrite Camulos Consulting");
             Console.WriteLine("By using this software application you are agreeing to the License agreement.  License Agreement can be accessed here: " + licAgreement);
-            Console.WriteLine("login credentials = user: {0}, password Length: {1}", Configuration.o365UserName, Configuration.o365Password.Length);
+            Console.WriteLine("Authentication: Microsoft Entra device code (MFA supported).");
 
 
 
@@ -3615,7 +3688,7 @@ namespace CamulosSharePointUpload
                                                         {
                                                             try
                                                             {
-                                                                FileSecurity fs = f.GetAccessControl();
+                                                                FileSecurity fs = FileSystemAclExtensions.GetAccessControl(f);
                                                                 modby = fs.GetOwner(typeof(System.Security.Principal.NTAccount)).ToString();
                                                                 modby = tranlateUser(modby);
                                                             }
@@ -4234,7 +4307,7 @@ namespace CamulosSharePointUpload
             //}
             using (FileStream o365FileStream = new FileStream(o365FilePath, FileMode.Open))
             {
-                Microsoft.SharePoint.Client.File.SaveBinaryDirect(o365Context, string.Format("/{0}/{1}", o365LibraryName, o365FileName), o365FileStream, true);
+                SharePointFileTransfer.Upload(o365Context, string.Format("/{0}/{1}", o365LibraryName, o365FileName), o365FileStream, true);
             }
         }
         private static void copyFile(ClientContext desctx, ClientContext sourcectx, string o365LibraryName, string srcFilePath, string o365FilePath, string o365FileName,Microsoft.SharePoint.Client.File fle)
@@ -4343,10 +4416,7 @@ namespace CamulosSharePointUpload
                         }
 
                         
-                        //FileInformation fileInfo = Microsoft.SharePoint.Client.File.OpenBinaryDirect(sourcectx, fle.ServerRelativeUrl);
-                        FileInformation fileInfo = Microsoft.SharePoint.Client.File.OpenBinaryDirect(sourcectx, sourcefile);
-                        Microsoft.SharePoint.Client.File.SaveBinaryDirect(desctx, copytofile, fileInfo.Stream, true);
-                        desctx.ExecuteQuery();
+                        SharePointFileTransfer.Copy(sourcectx, desctx, sourcefile, copytofile, true);
                         
                     }
                     if (candometa)
@@ -4398,7 +4468,7 @@ namespace CamulosSharePointUpload
             {
                 using (FileStream o365FileStream = new FileStream(srcFilePath, FileMode.Open))
                 {
-                    Microsoft.SharePoint.Client.File.SaveBinaryDirect(o365Context, string.Format("/{0}{1}", o365LibraryName, tmpFileName), o365FileStream, Configuration.overwrite);
+                    SharePointFileTransfer.Upload(o365Context, string.Format("/{0}{1}", o365LibraryName, tmpFileName), o365FileStream, Configuration.overwrite);
                 }
             }
             catch (System.Net.WebException wex)

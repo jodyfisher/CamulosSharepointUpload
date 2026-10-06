@@ -12,8 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DocumentFormat.OpenXml" Version="2.21.0" />
-    <PackageReference Include="Microsoft.SharePointOnline.CSOM" Version="16.1.5521.1200" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.20.0" />
+    <PackageReference Include="Microsoft.SharePointOnline.CSOM" Version="16.1.27709.12000" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.90.1" />
+    <PackageReference Include="System.Data.OleDb" Version="10.0.0" />
   </ItemGroup>
 
 
