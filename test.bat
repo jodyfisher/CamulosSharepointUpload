@@ -1,0 +1,1 @@
+C:\Users\Jody\Documents\Development\CamulosSharePointUpload\CamulosSharePointUpload\bin\Release\CamulosSharePointUpload.exe /source "C:\Users\Jody\Documents\client\test" /user jody@camulos.onmicrosoft.com /password  /site https://camulos.sharepoint.com /list "Shared Documents" -initialdir "quack" -listguid {4131C16F-27EC-4F61-85B5-F4A45B08D2E1} -confirm "no" -overwrite "no"

@@ -1,0 +1,49 @@
+
+# Visual Studio workspace and user settings
+.vs/
+.vsx
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+artifacts/
+.artifacts/
+
+# Test and diagnostic output
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+*.log
+*.tlog
+
+# Temporary files
+*.tmp
+*.tmp_proj
+~$*
+_ReSharper*/
+*.DotSettings.user
+
+# Local publish settings
+*.pubxml.user
+*.publishsettings
+
+# Local secrets and certificates
+*.pfx
+*.p12
+*.key
+.env
+.env.*
+
+# Local application configurations
+/App.config
