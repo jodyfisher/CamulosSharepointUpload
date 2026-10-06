@@ -47,8 +47,28 @@ internal static class SyncPaths
 
     public static bool IsExcluded(string path) => path.Split('/').Any(part =>
         part.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+        part.Equals(".DS_Store", StringComparison.OrdinalIgnoreCase) ||
+        part.Equals("Thumbs.db", StringComparison.OrdinalIgnoreCase) ||
+        part.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
+        part.StartsWith("._", StringComparison.OrdinalIgnoreCase) ||
         part.EndsWith(":Zone.Identifier", StringComparison.OrdinalIgnoreCase) ||
         part.EndsWith(":Zone.Identifier:$DATA", StringComparison.OrdinalIgnoreCase));
+
+    public static string ForSharePoint(string path)
+    {
+        // Only replace unsupported characters within each name, preserving separators.
+        if (string.IsNullOrEmpty(path) || path.StartsWith('/') ||
+            path.Split('/').Any(part => part is "" or "." or ".."))
+            throw new ArgumentException("Use a relative path without empty, '.' or '..' segments: " + path);
+        string result = string.Join("/", path.Split('/').Select(part =>
+        {
+            string name = new string(part.Select(c =>
+                char.IsControl(c) || "\"*:<>?\\|".Contains(c) ? ' ' : c).ToArray()).Trim(' ');
+            return name is "" or "." or ".." ? "_" : name;
+        }));
+        Validate(result);
+        return result;
+    }
 
     public static void ValidateSharePoint(string path)
     {

@@ -140,7 +140,7 @@ Test("relative paths and case collisions are rejected", () =>
 });
 Test("excluded metadata paths do not include similarly named documents", () =>
 {
-    foreach (string path in new[] { ".git/config", "repo/.GIT/logs/HEAD", "report.pdf:Zone.Identifier", "report.pdf:Zone.Identifier:$DATA" })
+    foreach (string path in new[] { ".git/config", "repo/.GIT/logs/HEAD", "report.pdf:Zone.Identifier", "report.pdf:Zone.Identifier:$DATA", ".DS_Store", "Archive/._.DS_Store", "Archive/._report.pdf", "photos/Thumbs.db", "desktop.ini" })
         Check(SyncPaths.IsExcluded(path));
     foreach (string path in new[] { ".gitignore", "repo/.github/workflows/build.yml", "Zone.Identifier", "report.pdf:Zone.Identifier.txt" })
         Check(!SyncPaths.IsExcluded(path));
@@ -160,6 +160,15 @@ Test("SharePoint preflight rejects invalid names but accepts hash percent and sp
         Throws<IOException>(() => SyncPaths.ValidateSharePoint(path));
     foreach (string path in new[] { "Accounts/2025 report # 100%.pdf", ".gitignore", "console.txt", "computer.txt" })
         SyncPaths.ValidateSharePoint(path);
+});
+Test("SharePoint name mapping only replaces problem characters", () =>
+{
+    Check(SyncPaths.ForSharePoint("Accounts/A&B, #100%.pdf") == "Accounts/A&B, #100%.pdf");
+    Check(SyncPaths.ForSharePoint(" Folder /Invoice:2025?.pdf") == "Folder/Invoice 2025 .pdf");
+    Check(SyncPaths.ForSharePoint("a\\b.pdf") == "a b.pdf");
+    Check(SyncPaths.ForSharePoint("???") == "_");
+    foreach (string path in new[] { "../outside", "/rooted", "a//b" })
+        Throws<ArgumentException>(() => SyncPaths.ForSharePoint(path));
 });
 string temp = Path.Combine(Path.GetTempPath(), "camulos-sync-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temp);
@@ -186,6 +195,49 @@ try
         System.IO.File.AppendAllText(Path.Combine(git, "HEAD"), "new history");
         Check(snapshot.SameAs(new LocalSyncStore(root, true).Scan()));
     });
+    Test("operating system metadata is excluded without deleting local files", () =>
+    {
+        string root = Path.Combine(temp, "mac-metadata"); Directory.CreateDirectory(root);
+        foreach (string name in new[] { ".DS_Store", "._.DS_Store", "._report.pdf", "Thumbs.db", "desktop.ini", "report.pdf" })
+            System.IO.File.WriteAllText(Path.Combine(root, name), "data");
+        var snapshot = new LocalSyncStore(root, true).Scan();
+        Check(snapshot.Files.Keys.SequenceEqual(new[] { "report.pdf" }));
+        Check(snapshot.ExcludedEntries == 5 && Directory.GetFiles(root).Length == 6);
+    });
+    if (OperatingSystem.IsLinux())
+    {
+        Test("mapped names preserve original local paths for upload and download", () =>
+        {
+            string root = Path.Combine(temp, "mapped");
+            string folder = Path.Combine(root, "Invoices:2025"); Directory.CreateDirectory(folder);
+            string physical = Path.Combine(folder, "A&B:invoice?.pdf");
+            System.IO.File.WriteAllText(physical, "old"); System.IO.File.SetLastWriteTimeUtc(physical, utc);
+            var local = new LocalSyncStore(root, true);
+            var snapshot = local.Scan();
+            string mapped = "Invoices 2025/A&B invoice .pdf";
+            var prior = snapshot.Files[mapped];
+            local.Verify(prior);
+            using (var read = new StreamReader(local.OpenRead(prior))) Check(read.ReadToEnd() == "old");
+            var remote = Snapshot(File(mapped, 5, 3)); remote.AddFolder("Invoices 2025");
+            Check(SyncPlanner.Build(snapshot, remote, true).DeleteFiles.Length == 0);
+            Check(SyncPlanner.Build(snapshot, remote, true).Transfers.Length == 0);
+            Check(SyncPlanner.Build(remote, snapshot, false).Transfers.Single().Source.Path == mapped);
+            using var content = new MemoryStream(Encoding.UTF8.GetBytes("new"));
+            local.Write(File(mapped, 5, 3), prior, content);
+            Check(System.IO.File.ReadAllText(physical) == "new");
+            Check(System.IO.File.GetLastWriteTimeUtc(physical) == utc.AddSeconds(5));
+            Check(!Directory.Exists(Path.Combine(root, "Invoices 2025")));
+        });
+        Test("name replacement collisions fail before transfers", () =>
+        {
+            string root = Path.Combine(temp, "mapped-collision"); Directory.CreateDirectory(root);
+            System.IO.File.WriteAllText(Path.Combine(root, "a:b"), "one");
+            System.IO.File.WriteAllText(Path.Combine(root, "a b"), "two");
+            var target = new FakeStore(new());
+            Throws<IOException>(() => SyncRunner.Run(new LocalSyncStore(root, true), target, true, false, TextWriter.Null));
+            Check(target.Events.Count == 0);
+        });
+    }
     Test("Linux scan preserves timestamps and empty directories", () =>
     {
         string root = Path.Combine(temp, "source"); Directory.CreateDirectory(Path.Combine(root, "empty"));

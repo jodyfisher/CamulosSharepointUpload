@@ -31,7 +31,7 @@ internal static class Program
                 // A missing/unreadable/case-conflicting source fails before connecting or writing.
                 var localSnapshot = local.Scan();
                 if (localSnapshot.ExcludedEntries > 0)
-                    Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local entries (.git and Windows Zone.Identifier metadata).");
+                    Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local metadata entries (.git, Zone.Identifier, .DS_Store, AppleDouble, Thumbs.db and desktop.ini).");
                 using var context = Configuration.GetUserContext(job.Site);
                 context.RequestTimeout = 180000;
                 var remote = new SharePointSyncStore(context, job.Library, job.Folder);

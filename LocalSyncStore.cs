@@ -20,7 +20,9 @@ internal sealed class LocalSyncStore(string root, bool requireExisting) : ISyncS
         {
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
             {
-                string relative = Path.GetRelativePath(rootPath, entry.FullName).Replace(Path.DirectorySeparatorChar, '/');
+                string original = Path.GetRelativePath(rootPath, entry.FullName).Replace(Path.DirectorySeparatorChar, '/');
+                // Check metadata before ':' replacement so Zone.Identifier remains excluded.
+                string relative = SyncPaths.IsExcluded(original) ? original : SyncPaths.ForSharePoint(original);
                 if (SyncPaths.IsExcluded(relative))
                 {
                     result.Exclude(relative);
@@ -29,7 +31,8 @@ internal sealed class LocalSyncStore(string root, bool requireExisting) : ISyncS
                 if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget != null)
                     throw new IOException("Symbolic links are not supported in the sync tree: " + entry.FullName);
                 if (!knownPaths.TryAdd(relative, entry.FullName))
-                    throw new IOException("Duplicate or case-conflicting local path: " + relative);
+                    throw new IOException("Duplicate or case-conflicting SharePoint path after name replacement: " +
+                        relative + " (" + knownPaths[relative] + " and " + entry.FullName + ")");
                 if (entry is DirectoryInfo)
                 {
                     result.AddFolder(relative);

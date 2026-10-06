@@ -55,6 +55,7 @@ internal sealed class SharePointSyncStore : ISyncStore
         var query = new CamlQuery
         {
             FolderServerRelativePath = ResourcePath.FromDecodedUrl(root),
+            DatesInUtc = true,
             ViewXml = "<View Scope='RecursiveAll'><Query><OrderBy><FieldRef Name='ID'/></OrderBy></Query>" +
                 "<ViewFields><FieldRef Name='FileRef'/><FieldRef Name='FSObjType'/><FieldRef Name='Modified'/>" +
                 "<FieldRef Name='File_x0020_Size'/></ViewFields><RowLimit Paged='TRUE'>2000</RowLimit></View>"
@@ -99,9 +100,12 @@ internal sealed class SharePointSyncStore : ISyncStore
     private SPFile Inspect(SyncFile expected)
     {
         var file = GetFile(expected.Path);
-        context.Load(file, f => f.Length, f => f.TimeLastModified);
+        var item = file.ListItemAllFields;
+        context.Load(file, f => f.Length);
+        context.Load(item);
         context.ExecuteQuery();
-        if (file.Length != expected.Length || Utc(file.TimeLastModified) != expected.ModifiedUtc)
+        // Use the same library Modified field as Scan and timestamp planning.
+        if (file.Length != expected.Length || Utc((DateTime)item["Modified"]) != expected.ModifiedUtc)
             throw new IOException("SharePoint file changed during sync: " + expected.Path);
         return file;
     }
@@ -118,12 +122,25 @@ internal sealed class SharePointSyncStore : ISyncStore
         var folder = context.Web.GetFolderByServerRelativePath(ResourcePath.FromDecodedUrl(SyncPaths.Parent(source.Path) == "" ? root : Url(SyncPaths.Parent(source.Path))));
         var file = SharePointFileTransfer.Upload(context, folder, Url(source.Path), content, source.Length, previous != null);
         var item = file.ListItemAllFields;
-        item["Modified"] = source.ModifiedUtc;
-        item.UpdateOverwriteVersion();
-        context.Load(file, f => f.Length, f => f.TimeLastModified);
+        context.Load(item);
         context.ExecuteQuery();
-        if (file.Length != source.Length || SyncPaths.Seconds(Utc(file.TimeLastModified)) != SyncPaths.Seconds(source.ModifiedUtc))
-            throw new IOException("SharePoint did not preserve the uploaded size/timestamp: " + source.Path);
+        DateTime expectedModified = SyncPaths.Seconds(source.ModifiedUtc);
+        item["Modified"] = expectedModified;
+        item.UpdateOverwriteVersion();
+        context.ExecuteQuery();
+
+        // Read back in a separate request after updating. File.TimeLastModified is
+        // not the field used by Scan; verify the library item's Modified instead.
+        var verifiedFile = GetFile(source.Path);
+        var verifiedItem = verifiedFile.ListItemAllFields;
+        context.Load(verifiedFile, f => f.Length);
+        context.Load(verifiedItem);
+        context.ExecuteQuery();
+        DateTime actualModified = Utc((DateTime)verifiedItem["Modified"]);
+        if (verifiedFile.Length != source.Length || SyncPaths.Seconds(actualModified) != expectedModified)
+            throw new IOException("SharePoint did not preserve the uploaded size/timestamp: " + source.Path +
+                $". Expected {source.Length} bytes / Modified {expectedModified:O}; " +
+                $"received {verifiedFile.Length} bytes / Modified {actualModified:O}.");
     }
     public void RecycleFile(SyncFile file)
     {

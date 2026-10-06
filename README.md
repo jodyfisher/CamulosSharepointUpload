@@ -35,8 +35,10 @@ because SharePoint can round timestamps. Equal timestamps with differing content
 or sizes are still skipped; this is a timestamp sync, not a checksum comparison.
 
 After upload, the tool sets SharePoint's `Modified` timestamp to the local source
-mtime and verifies size/time. The account must be permitted to update that
-metadata. Other metadata/permissions are not copied from the local file.
+mtime (at whole-second resolution) and verifies size plus the library item's
+`Modified` field in a separate read after updating it. Scan, overwrite protection
+and verification all use that same field. A verification error reports expected
+and actual values. The account must be permitted to update that metadata. Other metadata/permissions are not copied from the local file.
 
 Individual file/folder errors are printed and appended to `Errors.txt` in the
 current working directory, with UTC timestamps and relative paths. The run
@@ -84,19 +86,28 @@ is rejected: local deletion is deliberately not supported.
 
 ## Paths and large files
 
-Git metadata entries named `.git` (including their descendants) and Windows
-download metadata ending in `:Zone.Identifier` or `:Zone.Identifier:$DATA`
-are excluded automatically, in both directions. The actual document is still
+Git metadata entries named `.git` (including their descendants), Windows
+download metadata ending in `:Zone.Identifier` or `:Zone.Identifier:$DATA`,
+macOS `.DS_Store` / `._*` AppleDouble files, and Windows `Thumbs.db` /
+`desktop.ini` are excluded automatically, in both directions. The actual document is still
 synced. These exclusions also protect existing remote entries from `--delete`;
 ancestor folders containing excluded content are retained. Existing uploaded
 `.git` content needs manual cleanup if you want to remove it from SharePoint.
 Local files are never deleted by these exclusions.
 
-Before creating folders or uploading files, the tool checks the complete source
-for unsupported SharePoint characters/reserved names and paths over 400 characters.
-Other invalid document names are logged with the path to rename and skipped,
-while valid entries continue. Spaces within names, `#` and `%` are supported, subject to your
-tenant's settings.
+Local names are mapped to SharePoint names by replacing unsupported characters
+(`" * : < > ? \ |` and control characters) with spaces, trimming leading/trailing
+spaces. An entirely empty name becomes `_`. Supported characters such as `&`,
+commas, `#` and `%` are preserved (subject to tenant settings for `#` / `%`).
+Original local names are retained on disk. For example, `Invoice:2025.pdf` maps
+to `Invoice 2025.pdf` in SharePoint.
+
+The same mapped names are used for comparisons and deletion. Downloads reuse
+an existing local file's original name when it maps to the SharePoint name;
+new downloads use the SharePoint name because the replacement is not reversible.
+If two local entries map to the same name, the scan stops before any writes or
+deletion, reporting both paths. Before uploading, reserved names and paths over
+400 characters are logged and skipped, while valid entries continue.
 
 
 Relative directory structure is preserved. Decoded SharePoint ResourcePath APIs
