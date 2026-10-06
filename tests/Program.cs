@@ -170,6 +170,24 @@ Test("SharePoint name mapping only replaces problem characters", () =>
     foreach (string path in new[] { "../outside", "/rooted", "a//b" })
         Throws<ArgumentException>(() => SyncPaths.ForSharePoint(path));
 });
+Test("post-upload timestamp form keeps site-local time and existing editor", () =>
+{
+    var values = SharePointTimestamp.FormValues(new DateTime(2026, 9, 28, 21, 8, 46),
+        "i:0#.f|membership|user@example.com");
+    Check(values.Single(v => v.FieldName == "Modified").FieldValue == "2026-09-28 21:08:46");
+    using var editor = System.Text.Json.JsonDocument.Parse(values.Single(v => v.FieldName == "Editor").FieldValue);
+    Check(editor.RootElement[0].GetProperty("Key").GetString() == "i:0#.f|membership|user@example.com");
+});
+Test("metadata validation failures are reported instead of accepting an upload timestamp", () =>
+{
+    var accepted = SharePointTimestamp.FormValues(utc, "user@example.com");
+    SharePointTimestamp.EnsureSuccess(accepted);
+    Throws<IOException>(() => SharePointTimestamp.EnsureSuccess(
+        new[] { new Microsoft.SharePoint.Client.ListItemFormUpdateValue
+        { FieldName = "Modified", HasException = true, ErrorMessage = "Field is read only" } }));
+    Throws<IOException>(() => SharePointTimestamp.EnsureSuccess(
+        Array.Empty<Microsoft.SharePoint.Client.ListItemFormUpdateValue>()));
+});
 string temp = Path.Combine(Path.GetTempPath(), "camulos-sync-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temp);
 try

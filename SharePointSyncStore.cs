@@ -143,12 +143,18 @@ internal sealed class SharePointSyncStore : ISyncStore
         context.Load(item);
         context.ExecuteQuery();
         DateTime expectedModified = SyncPaths.Seconds(source.ModifiedUtc);
-        item["Modified"] = expectedModified;
-        // Restore the original setEditDate sequence: update both the library
-        // item and the file after assigning Modified.
-        item.Update();
-        file.Update();
+        var editorValue = item["Editor"] as FieldUserValue
+            ?? throw new IOException("SharePoint did not return the uploaded file's Editor: " + source.Path);
+        var editor = context.Web.SiteUsers.GetById(editorValue.LookupId);
+        context.Load(editor, user => user.LoginName);
+        // Form-value dates are interpreted in the site's regional time zone,
+        // not in UTC or in the Linux machine's local time zone.
+        var siteLocalTime = context.Web.RegionalSettings.TimeZone.UTCToLocalTime(expectedModified);
         context.ExecuteQuery();
+        var results = item.ValidateUpdateListItem(
+            SharePointTimestamp.FormValues(siteLocalTime.Value, editor.LoginName), true, "");
+        context.ExecuteQuery();
+        SharePointTimestamp.EnsureSuccess(results);
 
         var actual = ReadFileState(source.Path);
         if (actual.Length != source.Length || SyncPaths.Seconds(actual.ModifiedUtc) != expectedModified)
@@ -171,5 +177,33 @@ internal sealed class SharePointSyncStore : ISyncStore
             throw new IOException("Remote folder is no longer empty; deletion stopped: " + path);
         folder.Recycle();
         context.ExecuteQuery();
+    }
+}
+
+internal static class SharePointTimestamp
+{
+    public static IList<ListItemFormUpdateValue> FormValues(DateTime siteLocalTime, string editorLogin) =>
+        new List<ListItemFormUpdateValue>
+        {
+            new()
+            {
+                FieldName = "Modified",
+                FieldValue = siteLocalTime.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)
+            },
+            new()
+            {
+                FieldName = "Editor",
+                FieldValue = System.Text.Json.JsonSerializer.Serialize(new[] { new { Key = editorLogin } })
+            }
+        };
+
+    public static void EnsureSuccess(IList<ListItemFormUpdateValue> results)
+    {
+        var errors = results.Where(value => value.HasException).ToArray();
+        if (errors.Length > 0)
+            throw new IOException("SharePoint rejected timestamp metadata: " +
+                string.Join("; ", errors.Select(value => value.FieldName + ": " + value.ErrorMessage)));
+        if (!results.Any(value => value.FieldName == "Modified"))
+            throw new IOException("SharePoint returned no validation result for Modified.");
     }
 }
