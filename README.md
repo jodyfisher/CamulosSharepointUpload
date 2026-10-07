@@ -54,11 +54,14 @@ Changing the current working directory does not reset the checkpoint.
 - SharePoint keeps its upload timestamp; this mode does not attempt to preserve
   source dates. The uploaded size is verified. The default timestamp mode remains
   available by omitting `--since-last-run` and `--since`.
-- Only a successful run advances the checkpoint, to that run's **start** time.
-  Changes made during a run remain eligible next time. Failed runs retain the
-  previous cutoff and retry eligible files. The saved start time is rounded down
-  to whole seconds to accommodate filesystem timestamp precision. Dry runs never
-  write checkpoint state.
+- Every completed run advances the checkpoint to that run's **start** time,
+  even if individual files/folders failed. These failures are logged in
+  `Errors.txt` and do not make the next run repeat the whole upload.
+  Failed entries whose timestamps fall before the new cutoff are not retried
+  automatically; use an earlier `--since` cutoff to retry them.
+  Changes made during a run remain eligible next time. The saved start time is
+  rounded down to whole seconds to accommodate filesystem timestamp precision.
+  Dry runs and interrupted/stopped runs do not advance the checkpoint.
 - Files restored or newly added with old modified dates are outside the cutoff.
   An explicit earlier `--since` date can select them again.
 - Existing folders are retained and missing folders are created, including empty

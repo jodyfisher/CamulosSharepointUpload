@@ -61,9 +61,10 @@ internal static class Program
                         Console.Error.WriteLine("ERROR " + path + ": " + error.Message);
                         LogError(path, error);
                     }, options.LocalDateMode, sinceUtc);
-                checkpoint?.Complete(runStartedUtc, !jobErrors);
+                // Reaching here means the run completed; logged item failures do not hold back the cutoff.
+                checkpoint?.Complete(runStartedUtc, true);
                 if (checkpoint != null && !options.DryRun)
-                    Console.WriteLine(jobErrors ? "Checkpoint retained because some entries failed." : "Upload checkpoint saved.");
+                    Console.WriteLine(jobErrors ? "Upload checkpoint saved; individual failures are recorded in Errors.txt." : "Upload checkpoint saved.");
             }
             return hadErrors ? 1 : 0;
         }
@@ -213,7 +214,7 @@ internal sealed class SyncOptions
         Upload local files/folders that are missing or newer in SharePoint:
           dotnet CamulosSharePointUpload.dll --site URL --library "Documents" --local /srv/docs --tenant TENANT --clientid APP
         Upload by local date without comparing/preserving SharePoint dates:
-          add --since-last-run (checkpoint after successful runs; first run selects all)
+          add --since-last-run (checkpoint after completed runs; first run selects all)
           optional --since 2026-10-06T06:00:00Z to set/override the cutoff
           selected local files overwrite matching SharePoint content, even if newer remotely
         Download files/folders that are missing or newer locally:
@@ -227,7 +228,8 @@ internal sealed class SyncOptions
         Connection check: --site URL --tenant TENANT --clientid APP --authcheck
         Existing XML jobs: --configfile /srv/jobs.xml (same direction/dry-run/delete options)
         Default mode compares UTC timestamps at one-second resolution and skips destination-newer files.
-        Local-date uploads use an inclusive UTC cutoff; dry runs/failures never advance the checkpoint.
+        Local-date uploads use an inclusive UTC cutoff; completed runs advance it even with item errors.
+        Dry runs and interrupted/stopped runs never advance the checkpoint.
         Downloading does not remove local extras. Symlinks and case-conflicting names are rejected.
         Cordner/CSV/custom/metadata modes have been removed. See README.md and AUTHENTICATION.md.
         """;
