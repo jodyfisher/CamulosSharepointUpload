@@ -45,14 +45,21 @@ internal static class SyncPaths
             throw new ArgumentException("Use a relative path without empty, '.' or '..' segments: " + path);
     }
 
-    public static bool IsExcluded(string path) => path.Split('/').Any(part =>
+    public static bool IsExcluded(string path, bool isDirectory = false) =>
+        path.Split('/').Select((part, index) => new { Part = part, Index = index }).Any(segment =>
+        IsExcludedSegment(segment.Part) ||
+        ((isDirectory || segment.Index < Depth(path)) &&
+            (segment.Part.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+             segment.Part.Equals("obj", StringComparison.OrdinalIgnoreCase))));
+
+    private static bool IsExcludedSegment(string part) =>
         part.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
         part.Equals(".DS_Store", StringComparison.OrdinalIgnoreCase) ||
         part.Equals("Thumbs.db", StringComparison.OrdinalIgnoreCase) ||
         part.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
         part.StartsWith("._", StringComparison.OrdinalIgnoreCase) ||
         part.EndsWith(":Zone.Identifier", StringComparison.OrdinalIgnoreCase) ||
-        part.EndsWith(":Zone.Identifier:$DATA", StringComparison.OrdinalIgnoreCase));
+        part.EndsWith(":Zone.Identifier:$DATA", StringComparison.OrdinalIgnoreCase);
 
     public static string ForSharePoint(string path)
     {
@@ -139,7 +146,8 @@ internal static class SyncPlanner
 internal static class SyncRunner
 {
     public static SyncPlan Run(ISyncStore source, ISyncStore target, bool delete, bool dryRun, TextWriter output,
-        Action<string, Exception> onError = null, bool localDateMode = false, DateTime? sinceUtc = null)
+        Action<string, Exception> onError = null, bool localDateMode = false, DateTime? sinceUtc = null,
+        Func<SyncFile, SyncFile, bool> canResume = null, Action<SyncFile> onUploaded = null)
     {
         // Incomplete scans still stop the run before writes or deletion.
         var sourceSnapshot = source.Scan();
@@ -170,6 +178,13 @@ internal static class SyncRunner
             }
         }
         var plan = SyncPlanner.Build(sourceSnapshot, targetSnapshot, delete, localDateMode, sinceUtc);
+        if (canResume != null)
+        {
+            var remaining = plan.Transfers.Where(t => !canResume(t.Source, t.Previous)).ToArray();
+            int resumed = plan.Transfers.Length - remaining.Length;
+            plan = plan with { Transfers = remaining, Skipped = plan.Skipped + resumed };
+            if (resumed > 0) output.WriteLine($"Resume: {resumed} unchanged completed uploads skipped.");
+        }
         // Validate planned uploads before writes; older files outside a local
         // cutoff do not need to be uploaded or stamped.
         if (target is SharePointSyncStore remote)
@@ -196,7 +211,13 @@ internal static class SyncRunner
                         target.Write(transfer.Source, transfer.Previous, stream);
                     source.Verify(transfer.Source);
                 }
-            })) copied++;
+            }))
+            {
+                copied++;
+                // Progress persistence failures must stop the run, rather than
+                // advancing the cutoff after an unrecorded successful upload.
+                if (!dryRun) onUploaded?.Invoke(transfer.Source);
+            }
         }
         // No deletion after any item failure, incomplete scan, or changed source tree.
         if (delete && errors > 0)

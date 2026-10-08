@@ -23,7 +23,7 @@ internal sealed class SharePointSyncStore : ISyncStore
         if (library.BaseType != BaseType.DocumentLibrary) throw new ArgumentException("Select a SharePoint document library.");
         libraryRoot = library.RootFolder.ServerRelativePath.DecodedUrl.TrimEnd('/');
         if (!string.IsNullOrEmpty(folder)) SyncPaths.Validate(folder);
-        if (!string.IsNullOrEmpty(folder) && SyncPaths.IsExcluded(folder))
+        if (!string.IsNullOrEmpty(folder) && SyncPaths.IsExcluded(folder, true))
             throw new ArgumentException("The selected folder is excluded from document sync: " + folder);
         if (IsForms(folder)) throw new ArgumentException("The library's system Forms folder cannot be synced.");
         root = libraryRoot + (string.IsNullOrEmpty(folder) ? "" : "/" + folder);
@@ -76,7 +76,7 @@ internal sealed class SharePointSyncStore : ISyncStore
                     throw new IOException("SharePoint returned an item outside the sync scope: " + url);
                 string relative = url[(root.Length + 1)..];
                 if (root == libraryRoot && IsForms(relative)) continue;
-                if (SyncPaths.IsExcluded(relative))
+                if (SyncPaths.IsExcluded(relative, item.FileSystemObjectType == FileSystemObjectType.Folder))
                 {
                     result.Exclude(relative);
                     continue;

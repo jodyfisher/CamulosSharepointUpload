@@ -44,6 +44,21 @@ application-data directory (`CamulosSharePointUpload/checkpoints`). On Linux thi
 normally sits under `~/.local/share` or `XDG_DATA_HOME`. The command prints its path.
 Changing the current working directory does not reset the checkpoint.
 
+With `--since-last-run`, verified uploads are recorded immediately in a sibling
+`<checkpoint>.progress.jsonl` file and flushed to disk after each file. If you
+press Ctrl+C or the process stops, the next run with the same cutoff skips
+recorded files whose local modified time and size are unchanged, provided the
+remote file still exists with the expected size. Files changed locally, missing
+remotely or with a different remote size are uploaded again. This uses metadata,
+not content hashes; same-size remote edits are not detected by the resume record.
+The file in progress when interrupted may need to be uploaded again.
+
+The datetime cutoff is not advanced mid-run. Completed runs save it and clear
+the resume record, including runs with logged individual failures. An explicit
+`--since` that changes the cutoff starts a fresh resume record. Dry runs can
+preview existing progress but do not create, change or clear it. `--since` alone
+does not save resume progress; keep `--since-last-run` to enable it.
+
 - Files are selected when their local UTC modified time is **at or after** the
   checkpoint, including missing files only if their timestamps meet that cutoff.
 - With no checkpoint, the first run selects all local files. Use
@@ -144,7 +159,9 @@ is rejected: local deletion is deliberately not supported.
 Git metadata entries named `.git` (including their descendants), Windows
 download metadata ending in `:Zone.Identifier` or `:Zone.Identifier:$DATA`,
 macOS `.DS_Store` / `._*` AppleDouble files, and Windows `Thumbs.db` /
-`desktop.ini` are excluded automatically, in both directions. The actual document is still
+`desktop.ini` are excluded automatically, in both directions. Folders named
+`bin` or `obj` (case-insensitively) and their entire contents are also excluded;
+files merely named `bin` or `obj` are retained. The actual document is still
 synced. These exclusions also protect existing remote entries from `--delete`;
 ancestor folders containing excluded content are retained. Existing uploaded
 `.git` content needs manual cleanup if you want to remove it from SharePoint.
@@ -203,7 +220,8 @@ only to read the existing document job format.
 dotnet run --project tests/CamulosSharePointUpload.Tests.csproj -c Release
 ```
 
-Tests cover timestamp/direction decisions, dry runs, delete ordering, prevention
+Tests cover interruption/resume progress, build-folder exclusions,
+timestamp/direction decisions, dry runs, delete ordering, prevention
 of deletion after failures/source changes, path/case/link handling and local
 atomic downloads. Live SharePoint authentication, paging, uploads, metadata
 stamping and recycling still need validation using your tenant/app registration.

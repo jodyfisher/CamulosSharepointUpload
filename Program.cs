@@ -33,7 +33,7 @@ internal static class Program
                 // A missing/unreadable/case-conflicting source fails before connecting or writing.
                 var localSnapshot = local.Scan();
                 if (localSnapshot.ExcludedEntries > 0)
-                    Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local metadata entries (.git, Zone.Identifier, .DS_Store, AppleDouble, Thumbs.db and desktop.ini).");
+                    Console.WriteLine($"Excluded {localSnapshot.ExcludedEntries} local metadata/build entries (.git, Zone.Identifier, .DS_Store, AppleDouble, Thumbs.db, desktop.ini, bin and obj).");
                 using var context = Configuration.GetUserContext(job.Site);
                 context.RequestTimeout = 180000;
                 var remote = new SharePointSyncStore(context, job.Library, job.Folder, !options.LocalDateMode);
@@ -43,6 +43,9 @@ internal static class Program
                 DateTime? sinceUtc = options.SinceUtc ?? checkpoint?.Load();
                 if (checkpoint != null && sinceUtc.HasValue && sinceUtc.Value > runStartedUtc)
                     throw new IOException("The upload checkpoint/cutoff is later than this run's start. Check the system clock and --since date.");
+                checkpoint?.BeginProgress(sinceUtc);
+                if (checkpoint?.CompletedFiles > 0)
+                    Console.WriteLine($"Resume progress: {checkpoint.CompletedFiles} previously uploaded files recorded.");
                 if (options.LocalDateMode)
                 {
                     Console.WriteLine(sinceUtc.HasValue
@@ -60,7 +63,9 @@ internal static class Program
                         jobErrors = true;
                         Console.Error.WriteLine("ERROR " + path + ": " + error.Message);
                         LogError(path, error);
-                    }, options.LocalDateMode, sinceUtc);
+                    }, options.LocalDateMode, sinceUtc,
+                    checkpoint == null ? null : checkpoint.CanResume,
+                    checkpoint == null ? null : checkpoint.RecordUploaded);
                 // Reaching here means the run completed; logged item failures do not hold back the cutoff.
                 checkpoint?.Complete(runStartedUtc, true);
                 if (checkpoint != null && !options.DryRun)
@@ -229,7 +234,8 @@ internal sealed class SyncOptions
         Existing XML jobs: --configfile /srv/jobs.xml (same direction/dry-run/delete options)
         Default mode compares UTC timestamps at one-second resolution and skips destination-newer files.
         Local-date uploads use an inclusive UTC cutoff; completed runs advance it even with item errors.
-        Dry runs and interrupted/stopped runs never advance the checkpoint.
+        Interrupted --since-last-run uploads resume unchanged verified files on the next run.
+        Dry runs and interrupted/stopped runs never advance the datetime checkpoint.
         Downloading does not remove local extras. Symlinks and case-conflicting names are rejected.
         Cordner/CSV/custom/metadata modes have been removed. See README.md and AUTHENTICATION.md.
         """;

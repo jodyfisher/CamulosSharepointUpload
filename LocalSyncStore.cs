@@ -22,8 +22,8 @@ internal sealed class LocalSyncStore(string root, bool requireExisting) : ISyncS
             {
                 string original = Path.GetRelativePath(rootPath, entry.FullName).Replace(Path.DirectorySeparatorChar, '/');
                 // Check metadata before ':' replacement so Zone.Identifier remains excluded.
-                string relative = SyncPaths.IsExcluded(original) ? original : SyncPaths.ForSharePoint(original);
-                if (SyncPaths.IsExcluded(relative))
+                string relative = SyncPaths.IsExcluded(original, entry is DirectoryInfo) ? original : SyncPaths.ForSharePoint(original);
+                if (SyncPaths.IsExcluded(relative, entry is DirectoryInfo))
                 {
                     result.Exclude(relative);
                     continue;

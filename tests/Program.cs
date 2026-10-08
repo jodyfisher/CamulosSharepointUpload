@@ -333,6 +333,105 @@ try
         state.Complete(utc, true);
         Check(!Directory.Exists(Path.GetDirectoryName(path)));
     });
+    Test("interrupted uploads resume verified files without advancing the cutoff", () =>
+    {
+        string path = Path.Combine(temp, "resume", "state.json");
+        var files = Snapshot(File("a"), File("b"));
+        var firstTarget = new FakeStore(Snapshot());
+        using (var state = new SyncCheckpoint(path))
+        {
+            state.BeginProgress(null);
+            Throws<OperationCanceledException>(() => SyncRunner.Run(
+                new FakeStore(files), firstTarget, false, false, TextWriter.Null,
+                localDateMode: true, canResume: state.CanResume, onUploaded: file =>
+                {
+                    state.RecordUploaded(file);
+                    throw new OperationCanceledException("simulate Ctrl+C after recording a");
+                }));
+            Check(state.Load() == null);
+            Check(firstTarget.Events.SequenceEqual(new[] { "write:a" }));
+        }
+        // Simulate termination partway through the next journal append.
+        System.IO.File.AppendAllText(path + ".progress.jsonl", "{unfinished");
+        using (var state = new SyncCheckpoint(path))
+        {
+            state.BeginProgress(null);
+            Check(state.CompletedFiles == 1);
+            Check(state.CanResume(File("a"), File("a", 100)));
+            Check(!state.CanResume(File("a", 1), File("a", 100)));
+            Check(!state.CanResume(File("a", length: 2), File("a", 100)));
+            Check(!state.CanResume(File("a"), null));
+            Check(!state.CanResume(File("a"), File("a", length: 2)));
+            var target = new FakeStore(Snapshot(File("a", 100)));
+            var plan = SyncRunner.Run(new FakeStore(files), target, false, false, TextWriter.Null,
+                localDateMode: true, canResume: state.CanResume, onUploaded: state.RecordUploaded);
+            Check(plan.Skipped == 1);
+            Check(target.Events.SequenceEqual(new[] { "write:b" }));
+        }
+        using (var preview = new SyncCheckpoint(path, true))
+        {
+            string before = System.IO.File.ReadAllText(preview.ProgressPath);
+            preview.BeginProgress(null);
+            Check(preview.CompletedFiles == 2);
+            preview.RecordUploaded(File("c"));
+            preview.Complete(utc, true);
+            Check(System.IO.File.ReadAllText(preview.ProgressPath) == before);
+            Check(preview.Load() == null);
+        }
+        using (var state = new SyncCheckpoint(path))
+        {
+            state.BeginProgress(null);
+            Check(state.CompletedFiles == 2);
+            state.Complete(utc, true);
+            Check(state.Load() == utc);
+            Check(!System.IO.File.Exists(state.ProgressPath));
+        }
+    });
+    Test("failed and dry-run transfers are not recorded for resume", () =>
+    {
+        var recorded = new List<SyncFile>();
+        int errors = 0;
+        var files = Snapshot(File("a"), File("b"));
+        SyncRunner.Run(new FakeStore(files), new FakeStore(Snapshot()) { FailWritePath = "b" },
+            false, false, TextWriter.Null, (_, _) => errors++, localDateMode: true,
+            onUploaded: recorded.Add);
+        Check(errors == 1 && recorded.Select(f => f.Path).SequenceEqual(new[] { "a" }));
+        recorded.Clear();
+        SyncRunner.Run(new FakeStore(files), new FakeStore(Snapshot()), false, true,
+            TextWriter.Null, localDateMode: true, onUploaded: recorded.Add);
+        Check(recorded.Count == 0);
+    });
+    Test("a different explicit cutoff resets progress without changing the datetime checkpoint", () =>
+    {
+        string path = Path.Combine(temp, "resume-cutoff", "state.json");
+        using var state = new SyncCheckpoint(path);
+        state.Complete(utc, true);
+        state.BeginProgress(utc);
+        state.RecordUploaded(File("a"));
+        state.BeginProgress(utc.AddHours(-1));
+        Check(state.CompletedFiles == 0);
+        Check(state.Load() == utc);
+    });
+    Test("build folders are pruned and remote build content is protected from deletion", () =>
+    {
+        string root = Path.Combine(temp, "build-exclusions");
+        Directory.CreateDirectory(Path.Combine(root, "project", "BIN", "nested"));
+        Directory.CreateDirectory(Path.Combine(root, "project", "obj"));
+        System.IO.File.WriteAllText(Path.Combine(root, "project", "BIN", "nested", "app.dll"), "generated");
+        System.IO.File.WriteAllText(Path.Combine(root, "project", "obj", "assets.json"), "generated");
+        System.IO.File.WriteAllText(Path.Combine(root, "project", "Program.cs"), "source");
+        System.IO.File.WriteAllText(Path.Combine(root, "bin"), "a file, not a folder");
+        var scan = new LocalSyncStore(root, true).Scan();
+        Check(scan.Files.Count == 2 && scan.Files.ContainsKey("project/Program.cs") && scan.Files.ContainsKey("bin"));
+        Check(!scan.Folders.Any(p => p.Contains("BIN") || p.EndsWith("obj")));
+        Check(SyncPaths.IsExcluded("project/BIN", true));
+        Check(SyncPaths.IsExcluded("project/Obj/assets.json"));
+        Check(!SyncPaths.IsExcluded("binary/document.txt"));
+        var remote = Snapshot();
+        remote.AddFolder("remote-only");
+        remote.Exclude("remote-only/bin");
+        Check(!SyncPlanner.Build(Snapshot(), remote, true).DeleteFolders.Contains("remote-only"));
+    });
     Test("checkpoint scopes separate sources and targets", () =>
     {
         var first = new SyncJob("https://example.sharepoint.com", "Docs", Path.Combine(temp, "one"), "", "");
